@@ -155,7 +155,7 @@ class JSONPath {
       return [r];
     } else if (loc == r'$') {
       add(_trace(x, val, path, null, null, callback, hasArrExpr, false));
-    } else if (RegExp(r'^(-?\d*):(-?\d*):?(\d*)$').hasMatch(loc)) {
+    } else if (RegExp(r'^(-?\d*):(-?\d*):?(-?\d*)$').hasMatch(loc)) {
       final s = _doSlice(loc, x, val, path, parent, parentPropName, callback);
       if (s != null) add(s);
     } else if (loc.startsWith('?(') && loc.endsWith(')')) {
@@ -184,6 +184,11 @@ class JSONPath {
     } else if (loc.contains(',')) {
       for (final part in loc.split(',')) {
         add(_trace([part, ...x], val, path, parent, parentPropName, callback, true, false));
+      }
+    } else if (loc.startsWith('`') && loc.endsWith('`') && loc.length > 1) {
+      final prop = loc.substring(1, loc.length - 1);
+      if (_has(val, prop)) {
+        add(_trace(x, _get(val, prop), _p(path, prop), val, prop, callback, hasArrExpr, true));
       }
     } else if (_has(val, loc)) {
       add(_trace(x, _get(val, loc), _p(path, loc), val, loc, callback, hasArrExpr, true));
@@ -256,12 +261,25 @@ class JSONPath {
     final len = val.length;
     final parts = loc.split(':');
     final step = (parts.length > 2 && parts[2].isNotEmpty) ? int.parse(parts[2]) : 1;
-    var start = (parts[0].isNotEmpty) ? int.parse(parts[0]) : 0;
-    final end = (parts.length > 1 && parts[1].isNotEmpty) ? int.parse(parts[1]) : len;
-    start = start < 0 ? max(0, start + len) : min(len, start);
-    final eEnd = end < 0 ? max(0, end + len) : min(len, end);
+    if (step == 0) return [];
+    // Defaults differ for forward vs reverse slices
+    final defStart = step > 0 ? 0 : len - 1;
+    final defEnd = step > 0 ? len : -1;
+    var start = (parts[0].isNotEmpty) ? int.parse(parts[0]) : defStart;
+    var end = (parts.length > 1 && parts[1].isNotEmpty) ? int.parse(parts[1]) : defEnd;
+    // Handle negative indices relative to length.
+    // For reverse slices with default end (-1 sentinel), keep end at -1 so
+    // the loop iterates down to index 0 (i > -1 means i=2,1,0).
+    if (start < 0) start = max(0, len + start);
+    if (end < 0) {
+      // For forward slices, negative end means len + end.
+      // For reverse slices, -1 end sentinel means "include index 0".
+      end = step > 0 ? max(0, len + end) : -1;
+    }
+    start = min(step > 0 ? len : len - 1, start);
+    if (step > 0) end = min(len, end);
     final ret = <JsonPathMatch>[];
-    for (var i = start; i < eEnd; i += step) {
+    for (var i = start; (step > 0 ? i < end : i > end); i += step) {
       ret.addAll(_trace([i.toString(), ...expr], val, path, parent, ppn, callback, true, false));
     }
     return ret;
@@ -279,23 +297,8 @@ class JSONPath {
       .replaceAll('@parent', r'_$_parent')
       .replaceAll('@property', r'_$_property')
       .replaceAll('@root', r'_$_root');
-    // Replace @ followed by ., space, ), or [ with _$_v prefix
-      script = script.replaceAllMapped(
-        RegExp(r'@(\.)'),
-        (m) => r'_$_v' + m[1]!,
-      );
-      script = script.replaceAllMapped(
-        RegExp(r'@(\s)'),
-        (m) => r'_$_v' + m[1]!,
-      );
-      script = script.replaceAllMapped(
-        RegExp(r'@(\))'),
-        (m) => r'_$_v' + m[1]!,
-      );
-      script = script.replaceAllMapped(
-        RegExp(r'@(\[)'),
-        (m) => r'_$_v' + m[1]!,
-      );
+    // Replace all lone @ with _$_v (e.g. !@ → !_$_v, @ === 5 → _$_v === 5)
+    script = script.replaceAllMapped(RegExp(r'@(?![a-zA-Z0-9_])'), (m) => r'_$_v');
     if (code.contains('@path')) script = script.replaceAll('@path', r'_$_path');
 
     try {
@@ -339,6 +342,9 @@ class JSONPath {
       RegExp(r'@(?:null|boolean|number|string|integer|undefined|nonFinite|scalar|array|object|function|other)\(\)'),
       (m) => ';${m[0]};',
     );
+    // Normalize backtick-escaped properties: .`ident` → ['ident']
+    // so they survive the subsequent regex-based tokenization.
+    n = n.replaceAllMapped(RegExp(r"""\.`([^`]*)`"""), (m) => "['${m[1]}']");
     // Replace parenthetical filter/dynamic expressions in brackets
     // Captures ?(expr) or (expr) including the leading ?
     n = n.replaceAllMapped(RegExp(r'''\[(\??\(.*?\))\]'''), (m) {

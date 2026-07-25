@@ -752,7 +752,7 @@ void main() {
     test('typeof', () {
       expect(SafeEval.evaluate('typeof "hello"', {}), equals('string'));
       expect(SafeEval.evaluate('typeof 42', {}), equals('number'));
-      expect(SafeEval.evaluate('typeof null', {}), equals('undefined'));
+      expect(SafeEval.evaluate('typeof null', {}), equals('null'));
       expect(SafeEval.evaluate('typeof true', {}), equals('boolean'));
     });
 
