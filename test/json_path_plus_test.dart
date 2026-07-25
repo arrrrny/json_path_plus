@@ -109,11 +109,13 @@ void main() {
           {'key': 'author', 'val': 'B'},
         ],
       };
+      // Filter by matching a property within each map item.
+      // `@.key` accesses the "key" property of the current map item.
       final result = JSONPath.query(
-        r"$.items[?(@property === 'key' && @ === 'title')]",
+        r'$.items[?(@.key === "title")].val',
         data,
       );
-      expect(result, equals(['title']));
+      expect(result, equals(['A']));
     });
 
     test('@property in array context is index', () {
@@ -199,14 +201,22 @@ void main() {
     });
 
     test('Comparisons: ===, !==, <, >, <=, >=', () {
-      final data = {'val': 5};
+      final data = {'items': [1, 5, 9]};
       expect(
-        JSONPath.query(r'$.val[?(@ === 5)]', data),
+        JSONPath.query(r'$.items[?(@ === 5)]', data),
         equals([5]),
       );
       expect(
-        JSONPath.query(r'$.val[?(@ !== 3)]', data),
-        equals([5]),
+        JSONPath.query(r'$.items[?(@ !== 3)]', data),
+        equals([1, 5, 9]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@ > 5)]', data),
+        equals([9]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@ < 5)]', data),
+        equals([1]),
       );
     });
 
