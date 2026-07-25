@@ -1,7 +1,7 @@
 name: json_path_plus
 description: A Dart port of JSONPath-Plus — full-featured JSONPath query engine with filter expressions, type operators, slices, and safe evaluation. Zero dependencies.
 version: 1.0.0
-homepage: https://github.com/JSONPath-Plus/JSONPath
+homepage: https://github.com/arrrrny/json_path_plus
 repository: https://github.com/arrrrny/json_path_plus
 issue_tracker: https://github.com/arrrrny/json_path_plus/issues
 documentation: https://github.com/arrrrny/json_path_plus#readme
