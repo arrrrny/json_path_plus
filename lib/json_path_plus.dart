@@ -42,4 +42,4 @@ library;
 export 'src/json_path.dart';
 export 'src/json_path_match.dart';
 export 'src/json_path_options.dart';
-export 'src/sandboxed_script.dart';
+export 'src/sandboxed_script.dart' show SafeEval;

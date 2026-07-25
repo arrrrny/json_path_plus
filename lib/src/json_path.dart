@@ -68,11 +68,9 @@ class JSONPath {
     if (expr is List) {
       expr = toPathString(expr.map((e) => e.toString()).toList());
     }
-    if (expr is String && (expr as String).isEmpty) return null;
-    if (expr is! String) return null;
-    if (json == null) return null;
+    if (expr is String && expr.isEmpty) return null;
 
-    final exprList = toPathArray(expr);
+    final exprList = toPathArray(expr as String);
     if (exprList.isNotEmpty && exprList[0] == r'$' && exprList.length > 1) {
       exprList.removeAt(0);
     }
@@ -80,7 +78,7 @@ class JSONPath {
 
     final raw = _trace(exprList, json, [r'$'], opts.parent,
         opts.parentProperty, opts.callback, false, false);
-    final result = raw.where((e) => e != null && !e.isParentSelector).toList();
+    final result = raw.where((e) => !e.isParentSelector).toList();
 
     if (result.isEmpty) return opts.wrap ? <Object?>[] : null;
     if (!opts.wrap && result.length == 1 && !result[0].hasArrExpr) {
