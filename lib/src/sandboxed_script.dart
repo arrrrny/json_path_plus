@@ -44,11 +44,18 @@ class UnaryExpr extends Expr {
   UnaryExpr(this.op, this.operand);
 }
 
+/// Member access via dot-notation: `obj.property`
 class MemberExpr extends Expr {
   final Expr object;
-  final Expr property;
-  final bool computed; // true for obj[key], false for obj.key
-  MemberExpr(this.object, this.property, {this.computed = false});
+  final String property;
+  MemberExpr(this.object, this.property);
+}
+
+/// Index access via brackets: `obj[expr]`
+class IndexExpr extends Expr {
+  final Expr object;
+  final Expr index;
+  IndexExpr(this.object, this.index);
 }
 
 class CallExpr extends Expr {
@@ -275,16 +282,16 @@ class Parser {
   }
 
   Expr _parseComparison() {
-    var left = _parseBitwiseOr();
+    var left = _parseAddSub();
     while (true) {
       if (_matchOp('<')) {
-        left = BinaryExpr(left, '<', _parseBitwiseOr());
+        left = BinaryExpr(left, '<', _parseAddSub());
       } else if (_matchOp('>')) {
-        left = BinaryExpr(left, '>', _parseBitwiseOr());
+        left = BinaryExpr(left, '>', _parseAddSub());
       } else if (_matchOp('<=')) {
-        left = BinaryExpr(left, '<=', _parseBitwiseOr());
+        left = BinaryExpr(left, '<=', _parseAddSub());
       } else if (_matchOp('>=')) {
-        left = BinaryExpr(left, '>=', _parseBitwiseOr());
+        left = BinaryExpr(left, '>=', _parseAddSub());
       } else {
         break;
       }
@@ -292,53 +299,13 @@ class Parser {
     return left;
   }
 
-  Expr _parseBitwiseOr() {
-    var left = _parseBitwiseXor();
-    while (_matchOp('|')) {
-      left = BinaryExpr(left, '|', _parseBitwiseXor());
-    }
-    return left;
-  }
-
-  Expr _parseBitwiseXor() {
-    var left = _parseBitwiseAnd();
-    while (_matchOp('^')) {
-      left = BinaryExpr(left, '^', _parseBitwiseAnd());
-    }
-    return left;
-  }
-
-  Expr _parseBitwiseAnd() {
-    var left = _parseShift();
-    while (_matchOp('&')) {
-      left = BinaryExpr(left, '&', _parseShift());
-    }
-    return left;
-  }
-
-  Expr _parseShift() {
-    var left = _parseAddition();
-    while (true) {
-      if (_matchOp('<<')) {
-        left = BinaryExpr(left, '<<', _parseAddition());
-      } else if (_matchOp('>>')) {
-        left = BinaryExpr(left, '>>', _parseAddition());
-      } else if (_matchOp('>>>')) {
-        left = BinaryExpr(left, '>>>', _parseAddition());
-      } else {
-        break;
-      }
-    }
-    return left;
-  }
-
-  Expr _parseAddition() {
-    var left = _parseMultiplication();
+  Expr _parseAddSub() {
+    var left = _parseMulDiv();
     while (true) {
       if (_matchOp('+')) {
-        left = BinaryExpr(left, '+', _parseMultiplication());
+        left = BinaryExpr(left, '+', _parseMulDiv());
       } else if (_matchOp('-')) {
-        left = BinaryExpr(left, '-', _parseMultiplication());
+        left = BinaryExpr(left, '-', _parseMulDiv());
       } else {
         break;
       }
@@ -346,7 +313,7 @@ class Parser {
     return left;
   }
 
-  Expr _parseMultiplication() {
+  Expr _parseMulDiv() {
     var left = _parseUnary();
     while (true) {
       if (_matchOp('*')) {
@@ -367,6 +334,13 @@ class Parser {
       return UnaryExpr('!', _parseUnary());
     }
     if (_matchOp('-')) {
+      // Check for negative number literal — avoid wrapping
+      if (_current().type == 'num') {
+        final tok = _current();
+        _advance();
+        final val = -num.parse(tok.value);
+        return LiteralExpr(val);
+      }
       return UnaryExpr('-', _parseUnary());
     }
     if (_matchOp('+')) {
@@ -391,12 +365,12 @@ class Parser {
       if (_matchPunc('.')) {
         // Member access: obj.key
         final prop = _expectIdentifier();
-        expr = MemberExpr(expr, IdentifierExpr(prop), computed: false);
+        expr = MemberExpr(expr, prop);
       } else if (_matchPunc('[')) {
-        // Computed access: obj[key]
-        final prop = _parseTernary();
+        // Computed index access: obj[key]
+        final index = _parseTernary();
         _expectPunc(']');
-        expr = MemberExpr(expr, prop, computed: true);
+        expr = IndexExpr(expr, index);
       } else if (_matchPunc('(')) {
         // Function call
         final args = <Expr>[];
@@ -533,6 +507,8 @@ class SafeEval {
         return _evalUnary(ast, subs);
       case MemberExpr():
         return _evalMember(ast, subs);
+      case IndexExpr():
+        return _evalIndex(ast, subs);
       case CallExpr():
         return _evalCall(ast, subs);
       case ConditionalExpr():
@@ -602,7 +578,6 @@ class SafeEval {
         return (_toNum(_evalAst(ast.left, subs)).toInt()) >>
             (_toNum(_evalAst(ast.right, subs)).toInt());
       case '>>>':
-        // Dart doesn't have unsigned right shift; approximate
         return (_toNum(_evalAst(ast.left, subs)).toInt()) >>
             (_toNum(_evalAst(ast.right, subs)).toInt());
       default:
@@ -628,97 +603,98 @@ class SafeEval {
     }
   }
 
+  /// Evaluate a dot-notation member expression: `obj.property`
   static Object? _evalMember(MemberExpr ast, Map<String, Object?> subs) {
     final obj = _evalAst(ast.object, subs);
-    String prop;
-    if (ast.computed) {
-      final propVal = _evalAst(ast.property, subs);
-      prop = propVal?.toString() ?? '';
-    } else if (ast.property is IdentifierExpr) {
-      prop = (ast.property as IdentifierExpr).name;
-    } else {
-      prop = _evalAst(ast.property, subs)?.toString() ?? '';
-    }
+    final prop = ast.property;
 
-    if (obj == null) {
-      return null;
-    }
+    if (obj == null) return null;
 
-    // Handle .length on strings and lists
+    // Handle .length on strings, lists, and maps
     if (prop == 'length') {
       if (obj is String) return obj.length;
       if (obj is List) return obj.length;
       if (obj is Map) return obj.length;
     }
 
-    // Handle .toString()
-    if (prop == 'toString') {
-      // Return a callable marker — we handle it in CallExpr
-      return _MethodProxy(obj, 'toString');
+    // Return a method proxy for known string methods
+    if (obj is String) {
+      switch (prop) {
+        case 'indexOf': case 'includes': case 'startsWith':
+        case 'endsWith': case 'charAt': case 'substring':
+        case 'toLowerCase': case 'toUpperCase': case 'trim':
+        case 'split': case 'replace':
+          return _MethodProxy(obj, prop);
+        case 'toString':
+          return _MethodProxy(obj, 'toString');
+      }
     }
 
-    // Handle map/list property access
-    if (obj is Map) {
-      return obj[prop];
-    }
+    // Return a method proxy for list methods
     if (obj is List) {
-      final idx = int.tryParse(prop);
-      if (idx != null && idx >= 0 && idx < obj.length) {
-        return obj[idx];
+      switch (prop) {
+        case 'indexOf': case 'includes': case 'join':
+          return _MethodProxy(obj, prop);
+        case 'toString':
+          return _MethodProxy(obj, 'toString');
       }
+    }
+
+    // Return a method proxy for number methods
+    if (obj is num) {
+      if (prop == 'toString' || prop == 'toFixed' || prop == 'toPrecision') {
+        return _MethodProxy(obj, prop);
+      }
+    }
+
+    if (obj is bool) {
+      if (prop == 'toString') return _MethodProxy(obj, 'toString');
+    }
+
+    // Map property access
+    if (obj is Map) return obj[prop];
+
+    return null;
+  }
+
+  /// Evaluate a bracket index expression: `obj[expr]`
+  static Object? _evalIndex(IndexExpr ast, Map<String, Object?> subs) {
+    final obj = _evalAst(ast.object, subs);
+    final index = _evalAst(ast.index, subs);
+
+    if (obj == null) return null;
+
+    if (obj is List && index is int) {
+      if (index >= 0 && index < obj.length) return obj[index];
+      if (index < 0 && -index <= obj.length) return obj[obj.length + index];
       return null;
     }
-    if (obj is String) {
-      // String method proxies
-      switch (prop) {
-        case 'indexOf':
-          return _MethodProxy(obj, 'indexOf');
-        case 'includes':
-          return _MethodProxy(obj, 'includes');
-        case 'startsWith':
-          return _MethodProxy(obj, 'startsWith');
-        case 'endsWith':
-          return _MethodProxy(obj, 'endsWith');
-        case 'charAt':
-          return _MethodProxy(obj, 'charAt');
-        case 'substring':
-          return _MethodProxy(obj, 'substring');
-        case 'toLowerCase':
-          return _MethodProxy(obj, 'toLowerCase');
-        case 'toUpperCase':
-          return _MethodProxy(obj, 'toUpperCase');
-        case 'trim':
-          return _MethodProxy(obj, 'trim');
-        case 'split':
-          return _MethodProxy(obj, 'split');
-        case 'replace':
-          return _MethodProxy(obj, 'replace');
-      }
-      return null;
+
+    if (obj is Map) {
+      return obj[index.toString()];
     }
 
     return null;
   }
 
   static Object? _evalCall(CallExpr ast, Map<String, Object?> subs) {
-    // Special handling for method proxies
-    if (ast.callee is MemberExpr) {
-      final memberExpr = ast.callee as MemberExpr;
-      // Evaluate the member to see if it's a MethodProxy
-      final methodResult = _evalMember(memberExpr, subs);
+    // If callee is a MemberExpr or IndexExpr, resolve the method/value first
+    if (ast.callee is MemberExpr || ast.callee is IndexExpr) {
+      final methodResult = _evalAst(ast.callee, subs);
       if (methodResult is _MethodProxy) {
         final args = ast.arguments.map((a) => _evalAst(a, subs)).toList();
         return methodResult.call(args);
       }
+      return null;
     }
 
+    // Fallback: try to evaluate callee directly
     final callee = _evalAst(ast.callee, subs);
     if (callee is _MethodProxy) {
       final args = ast.arguments.map((a) => _evalAst(a, subs)).toList();
       return callee.call(args);
     }
 
-    // If callee is a function-like thing (shouldn't happen in sandbox)
     throw StateError('Cannot call non-function value');
   }
 
@@ -734,70 +710,64 @@ class SafeEval {
     return true;
   }
 
-  static bool _deepEquals(Object? a, Object? b) {
-    if (identical(a, b)) return true;
-    if (a is num && b is num) {
-      // Handle int/double cross-comparison
-      return a == b;
-    }
-    if (a is List && b is List) {
-      if (a.length != b.length) return false;
-      for (var i = 0; i < a.length; i++) {
-        if (!_deepEquals(a[i], b[i])) return false;
-      }
-      return true;
-    }
-    if (a is Map && b is Map) {
-      if (a.length != b.length) return false;
-      for (final key in a.keys) {
-        if (!b.containsKey(key) || !_deepEquals(a[key], b[key])) {
-          return false;
-        }
-      }
-      return true;
-    }
-    return a == b;
-  }
-
-  // Loose equality (== in JS)
-  static bool _looseEquals(Object? a, Object? b) {
-    if (identical(a, b)) return true;
-    if (a == null && b == null) return true;
-    // In JS, null == undefined is true
-    if (a == null || b == null) return a == null && b == null;
-    if (a is num && b is num) return a == b;
-    if (a is String && b is String) return a == b;
-    if (a is bool && b is bool) return a == b;
-    return a == b;
-  }
-
-  static int _compare(Object? a, Object? b) {
-    if (a is num && b is num) return a.compareTo(b);
-    if (a is String && b is String) return a.compareTo(b);
-    return 0;
-  }
-
-  static num _toNum(Object? val) {
-    if (val is num) return val;
-    if (val is String) return num.tryParse(val) ?? 0;
-    if (val is bool) return val ? 1 : 0;
-    return 0;
-  }
-
   static String _typeofVal(Object? val) {
-    if (val == null) return 'undefined';
+    if (val == null) return 'null';
     if (val is bool) return 'boolean';
-    if (val is num) {
-      if (val is int) return 'number';
-      return 'number';
-    }
+    if (val is num) return 'number';
     if (val is String) return 'string';
-    if (val is List) return 'object';
+    if (val is List) return 'array';
     if (val is Map) return 'object';
     if (val is Function) return 'function';
-    return 'object';
+    return 'undefined';
   }
 }
+
+/// Deep equality supporting cross-numeric-type comparison.
+bool _deepEquals(Object? a, Object? b) {
+  if (identical(a, b)) return true;
+  if (a is num && b is num) return a == b;
+  if (a is List && b is List) {
+    if (a.length != b.length) return false;
+    for (var i = 0; i < a.length; i++) {
+      if (!_deepEquals(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (a is Map && b is Map) {
+    if (a.length != b.length) return false;
+    for (final key in a.keys) {
+      if (!b.containsKey(key) || !_deepEquals(a[key], b[key])) return false;
+    }
+    return true;
+  }
+  return a == b;
+}
+
+/// Loose equality (== in JS).
+bool _looseEquals(Object? a, Object? b) {
+  if (identical(a, b)) return true;
+  if (a == null && b == null) return true;
+  if (a == null || b == null) return a == null && b == null;
+  if (a is num && b is num) return a == b;
+  if (a is String && b is String) return a == b;
+  if (a is bool && b is bool) return a == b;
+  return a == b;
+}
+
+int _compare(Object? a, Object? b) {
+  if (a is num && b is num) return a.compareTo(b);
+  if (a is String && b is String) return a.compareTo(b);
+  return 0;
+}
+
+num _toNum(Object? val) {
+  if (val is num) return val;
+  if (val is String) return num.tryParse(val) ?? 0;
+  if (val is bool) return val ? 1 : 0;
+  return 0;
+}
+
+/// Internal callable proxy for method invocations.
 
 /// Internal callable proxy for method invocations.
 class _MethodProxy {
@@ -812,23 +782,17 @@ class _MethodProxy {
       switch (_methodName) {
         case 'indexOf':
           if (args.isNotEmpty && args[0] is String) {
-            return target.indexOf(args[0] as String);
+            return target.indexOf(args[0] as String, args.length > 1 && args[1] is int ? args[1] as int : 0);
           }
           return -1;
         case 'includes':
-          if (args.isNotEmpty && args[0] is String) {
-            return target.contains(args[0] as String);
-          }
+          if (args.isNotEmpty && args[0] is String) return target.contains(args[0] as String);
           return false;
         case 'startsWith':
-          if (args.isNotEmpty && args[0] is String) {
-            return target.startsWith(args[0] as String);
-          }
+          if (args.isNotEmpty && args[0] is String) return target.startsWith(args[0] as String);
           return false;
         case 'endsWith':
-          if (args.isNotEmpty && args[0] is String) {
-            return target.endsWith(args[0] as String);
-          }
+          if (args.isNotEmpty && args[0] is String) return target.endsWith(args[0] as String);
           return false;
         case 'charAt':
           if (args.isNotEmpty && args[0] is int) {
@@ -851,9 +815,7 @@ class _MethodProxy {
         case 'trim':
           return target.trim();
         case 'split':
-          if (args.isNotEmpty && args[0] is String) {
-            return target.split(args[0] as String);
-          }
+          if (args.isNotEmpty && args[0] is String) return target.split(args[0] as String);
           return [target];
         case 'replace':
           if (args.length >= 2 && args[0] is String && args[1] is String) {
@@ -864,12 +826,41 @@ class _MethodProxy {
           return target;
       }
     }
+
+    if (target is List) {
+      switch (_methodName) {
+        case 'indexOf':
+          if (args.isNotEmpty) {
+            for (int i = 0; i < target.length; i++) {
+              if (_deepEquals(target[i], args[0])) return i;
+            }
+          }
+          return -1;
+        case 'includes':
+          if (args.isNotEmpty) {
+            for (int i = 0; i < target.length; i++) {
+              if (_deepEquals(target[i], args[0])) return true;
+            }
+          }
+          return false;
+        case 'join':
+          return target.map((e) => e?.toString() ?? 'null')
+              .join(args.isNotEmpty && args[0] is String ? args[0] as String : ',');
+        case 'toString':
+          return target.toString();
+      }
+    }
+
+    if (target is num && _methodName == 'toString') {
+      return target.toString();
+    }
+    if (target is bool && _methodName == 'toString') {
+      return target.toString();
+    }
     if (_methodName == 'toString') {
       return target?.toString() ?? 'null';
     }
-    if (target is List && _methodName == 'length') {
-      return target.length;
-    }
+
     throw StateError('Cannot call $_methodName on ${target.runtimeType}');
   }
 }
