@@ -1,3 +1,12 @@
+## 1.1.0
+
+- **Separated `IndexExpr` from `MemberExpr`** — cleaner AST for computed property access (`obj[key]` vs `obj.key`), enabling bracket filter expressions and dynamic properties to work correctly alongside dot-notation member access.
+- **Fixed reverse slice** — `$[::-1]` now correctly returns elements in reverse order with proper start/end defaults for negative step.
+- **Fixed backtick-escaped properties** — `` $.book.`0` `` now correctly resolves literal property names.
+- **Fixed `!@` negation** — standalone `@` replacement now uses a proper lookahead regex so `!@` correctly yields `!_$_v` for truthiness inversion.
+- **Fixed `typeof null`** — returns `"null"` (JSONPath-correct) instead of JS-style `"undefined"`.
+- **Zero failures** — all 90 tests pass.
+
 ## 1.0.0
 
 - Initial release.
