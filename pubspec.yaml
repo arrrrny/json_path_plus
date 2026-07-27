@@ -5,8 +5,6 @@ homepage: https://github.com/arrrrny/json_path_plus
 repository: https://github.com/arrrrny/json_path_plus
 issue_tracker: https://github.com/arrrrny/json_path_plus/issues
 documentation: https://github.com/arrrrny/json_path_plus#readme
-funding:
-  - https://github.com/sponsors/zikzakai
 
 topics:
   - json
