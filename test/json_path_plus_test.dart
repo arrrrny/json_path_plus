@@ -268,6 +268,35 @@ void main() {
       );
     });
 
+    test('Incomparable types never match <, >, <=, >= (issue #4)', () {
+      final data = {
+        'items': [
+          {'name': 'abc'},
+          {'name': 'zzz'},
+        ],
+      };
+      expect(
+        JSONPath.query(r'$.items[?(@.name <= 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name >= 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name < 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name > 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(5 <= @.name)].name', data),
+        equals([]),
+      );
+    });
+
     test('Boolean operators: && and ||', () {
       final data = {
         'items': [
@@ -868,6 +897,40 @@ void main() {
       expect(SafeEval.evaluate('2 > 1', {}), equals(true));
       expect(SafeEval.evaluate('1 <= 1', {}), equals(true));
       expect(SafeEval.evaluate('1 >= 2', {}), equals(false));
+    });
+
+    test('incomparable types: <, >, <=, >= yield false (issue #4)', () {
+      // string vs number, both operand orders (JS: NaN → false;
+      // RFC 9535: typed comparison → false)
+      expect(SafeEval.evaluate("'abc' < 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' > 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' <= 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' >= 5", {}), equals(false));
+      expect(SafeEval.evaluate("5 < 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 > 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 <= 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 >= 'abc'", {}), equals(false));
+      // null and composite operands are also incomparable with numbers
+      expect(SafeEval.evaluate('null < 5', {}), equals(false));
+      expect(SafeEval.evaluate('null >= 5', {}), equals(false));
+      expect(
+          SafeEval.evaluate('a < 5', {
+            'a': [1, 2]
+          }),
+          equals(false));
+      expect(
+          SafeEval.evaluate('a <= 5', {
+            'a': {'x': 1}
+          }),
+          equals(false));
+      // same-type comparisons still work
+      expect(SafeEval.evaluate("'a' < 'b'", {}), equals(true));
+      expect(SafeEval.evaluate("'b' >= 'a'", {}), equals(true));
+      expect(SafeEval.evaluate('2 <= 2', {}), equals(true));
+      // ==/=== semantics unchanged
+      expect(SafeEval.evaluate("'abc' == 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' === 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' != 5", {}), equals(true));
     });
 
     test('boolean logic', () {

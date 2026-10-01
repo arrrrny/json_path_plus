@@ -612,17 +612,21 @@ class SafeEval {
         return !_looseEquals(
             _evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '<':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <
-            0;
+        final cl =
+            _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return cl != null && cl < 0;
       case '>':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >
-            0;
+        final cg =
+            _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return cg != null && cg > 0;
       case '<=':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <=
-            0;
+        final cle =
+            _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return cle != null && cle <= 0;
       case '>=':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >=
-            0;
+        final cge =
+            _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return cge != null && cge >= 0;
       case '+':
         final l = _evalAst(ast.left, subs);
         final r = _evalAst(ast.right, subs);
@@ -847,10 +851,13 @@ bool _looseEquals(Object? a, Object? b) {
   return a == b;
 }
 
-int _compare(Object? a, Object? b) {
+/// Three-way comparison; null when the operands are not comparable (not both
+/// numbers or both strings), so ordered comparisons yield false for mixed
+/// types (JS NaN semantics; RFC 9535 typed comparison).
+int? _compare(Object? a, Object? b) {
   if (a is num && b is num) return a.compareTo(b);
   if (a is String && b is String) return a.compareTo(b);
-  return 0;
+  return null;
 }
 
 num _toNum(Object? val) {
