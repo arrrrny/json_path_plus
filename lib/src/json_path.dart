@@ -450,9 +450,11 @@ class JSONPath {
     n = n.replaceAllMapped(RegExp(r"""\.`([^`]*)`"""), (m) => "['${m[1]}']");
     // Replace parenthetical filter/dynamic expressions in brackets
     // Captures ?(expr) or (expr) including the leading ?
+    // Placeholders use the %#..% sentinel namespace so they cannot collide
+    // with literal quoted property names such as '#0' (issue #6).
     n = n.replaceAllMapped(RegExp(r'''\[(\??\(.*?\))\]'''), (m) {
       subx.add(m[1]!);
-      return '[#${subx.length - 1}]';
+      return '[#%${subx.length - 1}%]';
     });
     // RFC 9535 filter selectors: [? <expr>] without wrapping parentheses.
     // Normalized into the parenthesized ?(expr) form so the downstream
@@ -462,7 +464,7 @@ class JSONPath {
       RegExp(r"""\[\s*\?(?!\()((?:[^'"[\]]|'[^']*'|"[^"]*"|\[[^\]]*\])+)\]"""),
       (m) {
         subx.add('?(${m[1]!.trim()})');
-        return '[#${subx.length - 1}]';
+        return '[#%${subx.length - 1}%]';
       },
     );
     // Escape dots/tildes in bracket-quoted properties
@@ -481,13 +483,16 @@ class JSONPath {
     n = n.replaceAll(RegExp(r''';$|'?]|'$'''), '');
 
     final parts = n.split(';');
+    // Substitute placeholders by splicing them into the token, so a
+    // placeholder followed by a tokenization remainder keeps the remainder
+    // instead of being replaced wholesale (issue #6).
+    final placeholder = RegExp(r'#%(\d+)%');
     final exprList = parts.map((e) {
-      final m = RegExp(r'#(\d+)').firstMatch(e);
-      if (m != null) {
+      if (subx.isEmpty || !e.contains('#%')) return e;
+      return e.replaceAllMapped(placeholder, (m) {
         final idx = int.parse(m[1]!);
-        return idx < subx.length ? subx[idx] : e;
-      }
-      return e;
+        return idx < subx.length ? subx[idx] : m[0]!;
+      });
     }).toList();
     cache[expr] = exprList;
     return List<String>.from(exprList);
