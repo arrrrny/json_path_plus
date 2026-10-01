@@ -853,8 +853,10 @@ bool _looseEquals(Object? a, Object? b) {
 
 /// Three-way comparison; null when the operands are not comparable (not both
 /// numbers or both strings), so ordered comparisons yield false for mixed
-/// types (JS NaN semantics; RFC 9535 typed comparison).
+/// types, for booleans, and for NaN (JS NaN semantics; RFC 9535 typed
+/// comparison).
 int? _compare(Object? a, Object? b) {
+  if ((a is double && a.isNaN) || (b is double && b.isNaN)) return null;
   if (a is num && b is num) return a.compareTo(b);
   if (a is String && b is String) return a.compareTo(b);
   return null;

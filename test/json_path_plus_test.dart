@@ -923,6 +923,20 @@ void main() {
             'a': {'x': 1}
           }),
           equals(false));
+      // booleans have no JSON ordering: every ordered comparison is false,
+      // even though JS would coerce them numerically via Number()
+      expect(SafeEval.evaluate('true >= false', {}), equals(false));
+      expect(SafeEval.evaluate('true < false', {}), equals(false));
+      expect(SafeEval.evaluate('false > true', {}), equals(false));
+      expect(SafeEval.evaluate('true <= false', {}), equals(false));
+      // NaN is incomparable (JS: any ordered comparison against NaN is false;
+      // Dart's num.compareTo would total-order it above every other value)
+      expect(SafeEval.evaluate('0/0 > 5', {}), equals(false));
+      expect(SafeEval.evaluate('0/0 < 5', {}), equals(false));
+      expect(SafeEval.evaluate('5 >= 0/0', {}), equals(false));
+      expect(SafeEval.evaluate('a / b > 5', {'a': 0, 'b': 0}), equals(false));
+      // infinite operands are still ordered normally
+      expect(SafeEval.evaluate('a / b > 5', {'a': 10, 'b': 0}), equals(true));
       // same-type comparisons still work
       expect(SafeEval.evaluate("'a' < 'b'", {}), equals(true));
       expect(SafeEval.evaluate("'b' >= 'a'", {}), equals(true));
