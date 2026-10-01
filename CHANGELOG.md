@@ -1,3 +1,12 @@
+## 1.2.0
+
+- **RFC 9535 filter selectors** — bare filter expressions `[?@.price > 10]` now work without wrapping parentheses (`[?(...)]` still supported). Standard filter syntax no longer needs workarounds when migrating from `json_path`.
+- **`match()` and `search()` function extensions** — `match(value, pattern)` returns true iff the *entire* string matches the regex; `search(value, pattern)` matches substrings. Non-string values and invalid patterns yield `false` (never throw), per RFC 9535 §2.4.6–2.4.7.
+- **`key()` function** — `key(@)` / `key()` returns the member key (or array index) of the current node in filters; equivalent to the JSONPath-Plus `@property` magic variable and the `json_path` package's `key()`.
+- **`String.match(pattern)` method** in filter expressions — returns the first matching substring or `null`.
+- **`BuiltInFunction` exported** — sandbox entries named `match`/`search`/`key` shadow the built-ins, enabling user-defined filter functions.
+- Analyzer-clean (`dart analyze` reports zero issues); 119 tests green.
+
 ## 1.1.0
 
 - **Separated `IndexExpr` from `MemberExpr`** — cleaner AST for computed property access (`obj[key]` vs `obj.key`), enabling bracket filter expressions and dynamic properties to work correctly alongside dot-notation member access.

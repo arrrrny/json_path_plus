@@ -4,7 +4,7 @@ import 'sandboxed_script.dart';
 import 'dart:math';
 
 class JSONPath {
-  JsonPathOptions? _opts;
+  final JsonPathOptions? _opts;
   static final Map<String, dynamic> cache = {};
 
   // Mutable static state set before each evaluate call
@@ -232,9 +232,13 @@ class JSONPath {
 
   static void _walk(Object? val, void Function(String) f) {
     if (val is List) {
-      for (var i = 0; i < val.length; i++) f(i.toString());
+      for (var i = 0; i < val.length; i++) {
+        f(i.toString());
+      }
     } else if (val is Map) {
-      for (final k in val.keys) f(k.toString());
+      for (final k in val.keys) {
+        f(k.toString());
+      }
     }
   }
 
@@ -290,6 +294,9 @@ class JSONPath {
     _sandbox[r'_$_parent'] = parent;
     _sandbox[r'_$_property'] = vn;
     _sandbox[r'_$_v'] = v;
+    // key(@) — RFC 9535-style member key (or array index) of the current
+    // node; equivalent to the @property magic variable.
+    _sandbox['key'] = BuiltInFunction((_) => vn);
     if (code.contains('@path')) _sandbox[r'_$_path'] = toPathString([...path, vn]);
 
     var script = code
@@ -315,6 +322,7 @@ class JSONPath {
     _sandbox[r'_$_parent'] = parent;
     _sandbox[r'_$_property'] = lastPath.toString();
     _sandbox[r'_$_v'] = val;
+    _sandbox['key'] = BuiltInFunction((_) => lastPath.toString());
 
     var script = code
       .replaceAll('@parentProperty', r'_$_parentProperty')
@@ -351,6 +359,17 @@ class JSONPath {
       subx.add(m[1]!);
       return '[#${subx.length - 1}]';
     });
+    // RFC 9535 filter selectors: [? <expr>] without wrapping parentheses.
+    // Normalized into the parenthesized ?(expr) form so the downstream
+    // filter handling stays uniform. The alternation keeps quoted strings
+    // and single-level nested brackets intact.
+    n = n.replaceAllMapped(
+      RegExp(r"""\[\s*\?(?!\()((?:[^'"[\]]|'[^']*'|"[^"]*"|\[[^\]]*\])+)\]"""),
+      (m) {
+        subx.add('?(${m[1]!.trim()})');
+        return '[#${subx.length - 1}]';
+      },
+    );
     // Escape dots/tildes in bracket-quoted properties
     n = n.replaceAllMapped(RegExp(r"""\[['"]([^'"]*?)['"]\]"""), (m) =>
       "['${m[1]!.replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");

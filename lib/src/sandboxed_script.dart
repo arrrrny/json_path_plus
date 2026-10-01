@@ -6,7 +6,10 @@
 /// Supports:
 /// - Property access: `obj.key`, `obj[key]`
 /// - Method calls: `.indexOf(arg)`, `.includes(arg)`, `.startsWith(prefix)`,
-///   `.endsWith(suffix)`, `.length`, `.toString()`
+///   `.endsWith(suffix)`, `.length`, `.toString()`, `.match(pattern)`
+/// - Built-in filter functions (RFC 9535 §2.4.6–2.4.7):
+///   `match(value, pattern)` (full match), `search(value, pattern)`
+///   (substring match) — non-string values and invalid patterns yield false
 /// - Comparisons: `===`, `==`, `!==`, `!=`, `<`, `>`, `<=`, `>=`
 /// - Boolean operators: `&&`, `||`, `!`
 /// - Arithmetic: `+`, `-`, `*`, `/`, `%`
@@ -16,6 +19,7 @@
 /// - Ternary: `cond ? a : b`
 /// - Parentheses for grouping
 /// - `typeof`, unary `-`, `+`
+library;
 
 // ── AST Nodes ──
 
@@ -484,12 +488,45 @@ class Parser {
 class SafeEval {
   /// Parse and evaluate a JS-style expression string with the given
   /// variable bindings.
+  ///
+  /// The RFC 9535 `match()` and `search()` function extensions are always
+  /// available; entries in [context] shadow them.
   static Object? evaluate(String code, Map<String, Object?> context) {
+    final subs = <String, Object?>{
+      'match': BuiltInFunction(_rfcMatch),
+      'search': BuiltInFunction(_rfcSearch),
+      ...context,
+    };
     final tokenizer = Tokenizer(code);
     final tokens = tokenizer.tokenize();
     final parser = Parser(tokens);
     final ast = parser.parse();
-    return _evalAst(ast, context);
+    return _evalAst(ast, subs);
+  }
+
+  /// RFC 9535 §2.4.6 `match()`: true iff the entirety of the string matches
+  /// the pattern. Non-string values and invalid patterns yield false.
+  static bool _rfcMatch(List<Object?> args) =>
+      _rfcStringMatch(args, partial: false);
+
+  /// RFC 9535 §2.4.7 `search()`: true iff the string contains a match of the
+  /// pattern. Non-string values and invalid patterns yield false.
+  static bool _rfcSearch(List<Object?> args) =>
+      _rfcStringMatch(args, partial: true);
+
+  static bool _rfcStringMatch(List<Object?> args, {required bool partial}) {
+    if (args.length != 2) return false;
+    final value = args[0];
+    final pattern = args[1];
+    if (value is! String || pattern is! String) return false;
+    final RegExp regex;
+    try {
+      // match() is anchored: the pattern must cover the entire string.
+      regex = RegExp(partial ? pattern : '^(?:$pattern)\$');
+    } on FormatException {
+      return false; // invalid pattern → LogicalFalse (RFC 9535)
+    }
+    return regex.hasMatch(value);
   }
 
   static Object? _evalAst(Expr ast, Map<String, Object?> subs) {
@@ -623,7 +660,7 @@ class SafeEval {
         case 'indexOf': case 'includes': case 'startsWith':
         case 'endsWith': case 'charAt': case 'substring':
         case 'toLowerCase': case 'toUpperCase': case 'trim':
-        case 'split': case 'replace':
+        case 'split': case 'replace': case 'match':
           return _MethodProxy(obj, prop);
         case 'toString':
           return _MethodProxy(obj, 'toString');
@@ -690,6 +727,10 @@ class SafeEval {
 
     // Fallback: try to evaluate callee directly
     final callee = _evalAst(ast.callee, subs);
+    if (callee is BuiltInFunction) {
+      final args = ast.arguments.map((a) => _evalAst(a, subs)).toList();
+      return callee.call(args);
+    }
     if (callee is _MethodProxy) {
       final args = ast.arguments.map((a) => _evalAst(a, subs)).toList();
       return callee.call(args);
@@ -768,8 +809,6 @@ num _toNum(Object? val) {
 }
 
 /// Internal callable proxy for method invocations.
-
-/// Internal callable proxy for method invocations.
 class _MethodProxy {
   final Object? _target;
   final String _methodName;
@@ -822,6 +861,16 @@ class _MethodProxy {
             return target.replaceAll(args[0] as String, args[1] as String);
           }
           return target;
+        case 'match':
+          // JS-like first match: returns the matching substring or null.
+          if (args.isNotEmpty && args[0] is String) {
+            try {
+              return RegExp(args[0] as String).stringMatch(target);
+            } on FormatException {
+              return null;
+            }
+          }
+          return null;
         case 'toString':
           return target;
       }
@@ -863,4 +912,16 @@ class _MethodProxy {
 
     throw StateError('Cannot call $_methodName on ${target.runtimeType}');
   }
+}
+
+/// A built-in function callable from sandboxed filter expressions
+/// (e.g. the RFC 9535 `match()` / `search()` extensions, or the filter
+/// context's `key()`). Resolved by identifier before user sandbox entries,
+/// which may shadow it.
+class BuiltInFunction {
+  final Object? Function(List<Object?> args) _fn;
+
+  BuiltInFunction(this._fn);
+
+  Object? call(List<Object?> args) => _fn(args);
 }
