@@ -37,12 +37,12 @@ class JsonPathOptions {
   final String? parentProperty;
 
   /// Optional callback invoked for every match.
-  final void Function(Object? value, String type, JsonPathMatch full)?
-      callback;
+  final void Function(Object? value, String type, JsonPathMatch full)? callback;
 
   /// Callback for the `@other()` type operator. Throws by default.
-  final Object? Function(Object? value, List<String> path, Object? parent,
-      String? parentProp)? otherTypeCallback;
+  final Object? Function(
+          Object? value, List<String> path, Object? parent, String? parentProp)?
+      otherTypeCallback;
 
   const JsonPathOptions({
     required this.path,

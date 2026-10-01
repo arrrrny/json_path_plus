@@ -42,7 +42,8 @@ class JSONPath {
   }
 
   static List<Object?> query(String path, Object json, {bool wrap = true}) {
-    final result = evaluate(JsonPathOptions(path: path, json: json, wrap: wrap));
+    final result =
+        evaluate(JsonPathOptions(path: path, json: json, wrap: wrap));
     if (result is List) return result.cast<Object?>();
     return [result];
   }
@@ -76,8 +77,8 @@ class JSONPath {
     }
     _hasParentSelector = false;
 
-    final raw = _trace(exprList, json, [r'$'], opts.parent,
-        opts.parentProperty, opts.callback, false, false);
+    final raw = _trace(exprList, json, [r'$'], opts.parent, opts.parentProperty,
+        opts.callback, false, false);
     final result = raw.where((e) => !e.isParentSelector).toList();
 
     if (result.isEmpty) return opts.wrap ? <Object?>[] : null;
@@ -101,29 +102,43 @@ class JSONPath {
         ea.pointer = toPointer(ea.path);
         ea.pathString = toPathString(ea.path);
         return ea;
-      case 'value': return ea.value;
-      case 'parent': return ea.parent;
-      case 'parentProperty': return ea.parentProperty;
-      case 'path': return toPathString(ea.path);
-      case 'pointer': return toPointer(ea.path);
-      default: throw ArgumentError('Unknown result type: $_resultType');
+      case 'value':
+        return ea.value;
+      case 'parent':
+        return ea.parent;
+      case 'parentProperty':
+        return ea.parentProperty;
+      case 'path':
+        return toPathString(ea.path);
+      case 'pointer':
+        return toPointer(ea.path);
+      default:
+        throw ArgumentError('Unknown result type: $_resultType');
     }
   }
 
-  static void _cb(JsonPathMatch obj, void Function(Object?, String, JsonPathMatch)? cb, String type) {
+  static void _cb(JsonPathMatch obj,
+      void Function(Object?, String, JsonPathMatch)? cb, String type) {
     if (cb != null) cb(_output(obj), type, obj);
   }
 
   static List<JsonPathMatch> _trace(
-    List<String> expr, Object? val, List<String> path,
-    Object? parent, String? parentPropName,
+    List<String> expr,
+    Object? val,
+    List<String> path,
+    Object? parent,
+    String? parentPropName,
     void Function(Object?, String, JsonPathMatch)? callback,
-    bool hasArrExpr, bool literalPriority,
+    bool hasArrExpr,
+    bool literalPriority,
   ) {
     if (expr.isEmpty) {
       final r = JsonPathMatch(
-        path: List.from(path), value: val, parent: parent,
-        parentProperty: parentPropName, hasArrExpr: hasArrExpr,
+        path: List.from(path),
+        value: val,
+        parent: parent,
+        parentProperty: parentPropName,
+        hasArrExpr: hasArrExpr,
       );
       _cb(r, callback, 'value');
       return [r];
@@ -136,21 +151,39 @@ class JSONPath {
     void add(List<JsonPathMatch> es) => ret.addAll(es);
 
     if (loc == '*') {
-      _walk(val, (m) => add(_trace(x, _get(val, m), _p(path, m), val, m, callback, true, true)));
+      _walk(
+          val,
+          (m) => add(_trace(
+              x, _get(val, m), _p(path, m), val, m, callback, true, true)));
     } else if (loc == '..') {
-      add(_trace(x, val, path, parent, parentPropName, callback, hasArrExpr, false));
+      add(_trace(
+          x, val, path, parent, parentPropName, callback, hasArrExpr, false));
       _walk(val, (m) {
         final c = _get(val, m);
-        if (_isObj(c)) add(_trace(List.from(expr), c, _p(path, m), val, m, callback, true, false));
+        if (_isObj(c)) {
+          add(_trace(
+              List.from(expr), c, _p(path, m), val, m, callback, true, false));
+        }
       });
     } else if (loc == '^') {
       _hasParentSelector = true;
-      return [JsonPathMatch(path: path.sublist(0, path.length - 1), value: null,
-        parent: null, parentProperty: null, hasArrExpr: hasArrExpr,
-        isParentSelector: true, parentSelectorExpr: x)];
+      return [
+        JsonPathMatch(
+            path: path.sublist(0, path.length - 1),
+            value: null,
+            parent: null,
+            parentProperty: null,
+            hasArrExpr: hasArrExpr,
+            isParentSelector: true,
+            parentSelectorExpr: x)
+      ];
     } else if (loc == '~') {
-      final r = JsonPathMatch(path: _p(path, loc), value: parentPropName,
-        parent: parent, parentProperty: null, hasArrExpr: hasArrExpr);
+      final r = JsonPathMatch(
+          path: _p(path, loc),
+          value: parentPropName,
+          parent: parent,
+          parentProperty: null,
+          hasArrExpr: hasArrExpr);
       _cb(r, callback, 'property');
       return [r];
     } else if (loc == r'$') {
@@ -159,51 +192,75 @@ class JSONPath {
       final s = _doSlice(loc, x, val, path, parent, parentPropName, callback);
       if (s != null) add(s);
     } else if (loc.startsWith('?(') && loc.endsWith(')')) {
-      if (identical(_evalMode, false)) throw StateError('Eval [?(expr)] prevented.');
+      if (identical(_evalMode, false)) {
+        throw StateError('Eval [?(expr)] prevented.');
+      }
       final code = loc.substring(2, loc.length - 1); // strip ?( and )
       _walk(val, (m) {
-        if (_filter(code, _get(val, m), m, path, parent, parentPropName, ignoreErrors: _ignoreEvalErrors)) {
-          add(_trace(x, _get(val, m), _p(path, m), val, m, callback, true, false));
+        if (_filter(code, _get(val, m), m, path, parent, parentPropName,
+            ignoreErrors: _ignoreEvalErrors)) {
+          add(_trace(
+              x, _get(val, m), _p(path, m), val, m, callback, true, false));
         }
       });
     } else if (loc.startsWith('(') && loc.endsWith(')')) {
-      if (identical(_evalMode, false)) throw StateError('Eval [(expr)] prevented.');
+      if (identical(_evalMode, false)) {
+        throw StateError('Eval [(expr)] prevented.');
+      }
       final key = _dynamic(loc.substring(1, loc.length - 1), val,
-        path.isNotEmpty ? path.last : '', parent, parentPropName);
-      add(_trace([key.toString(), ...x], val, path, parent, parentPropName, callback, hasArrExpr, false));
+          path.isNotEmpty ? path.last : '', parent, parentPropName);
+      add(_trace([key.toString(), ...x], val, path, parent, parentPropName,
+          callback, hasArrExpr, false));
     } else if (loc.startsWith('@') && loc.endsWith('()')) {
       if (_typeCheck(loc.substring(1, loc.length - 2), val)) {
-        final r = JsonPathMatch(path: List.from(path), value: val,
-          parent: parent, parentProperty: parentPropName, hasArrExpr: hasArrExpr);
+        final r = JsonPathMatch(
+            path: List.from(path),
+            value: val,
+            parent: parent,
+            parentProperty: parentPropName,
+            hasArrExpr: hasArrExpr);
         _cb(r, callback, 'value');
         return [r];
       }
     } else if (loc.startsWith('`') && loc.length > 1) {
       final prop = loc.substring(1);
-      if (_has(val, prop)) add(_trace(x, _get(val, prop), _p(path, prop), val, prop, callback, hasArrExpr, true));
+      if (_has(val, prop)) {
+        add(_trace(x, _get(val, prop), _p(path, prop), val, prop, callback,
+            hasArrExpr, true));
+      }
     } else if (loc.contains(',')) {
       for (final part in loc.split(',')) {
-        add(_trace([part, ...x], val, path, parent, parentPropName, callback, true, false));
+        add(_trace([part, ...x], val, path, parent, parentPropName, callback,
+            true, false));
       }
     } else if (loc.startsWith('`') && loc.endsWith('`') && loc.length > 1) {
       final prop = loc.substring(1, loc.length - 1);
       if (_has(val, prop)) {
-        add(_trace(x, _get(val, prop), _p(path, prop), val, prop, callback, hasArrExpr, true));
+        add(_trace(x, _get(val, prop), _p(path, prop), val, prop, callback,
+            hasArrExpr, true));
       }
     } else if (_has(val, loc)) {
-      add(_trace(x, _get(val, loc), _p(path, loc), val, loc, callback, hasArrExpr, true));
+      add(_trace(x, _get(val, loc), _p(path, loc), val, loc, callback,
+          hasArrExpr, true));
     }
 
     if (_hasParentSelector) {
       for (var t = 0; t < ret.length; t++) {
         if (ret[t].isParentSelector) {
           final tmp = _trace(ret[t].parentSelectorExpr ?? [], val, ret[t].path,
-            parent, parentPropName, callback, hasArrExpr, false);
+              parent, parentPropName, callback, hasArrExpr, false);
           if (tmp.length > 1) {
             ret[t] = tmp[0];
-            for (var tt = 1; tt < tmp.length; tt++) { t++; ret.insert(t, tmp[tt]); }
-          } else if (tmp.isNotEmpty) { ret[t] = tmp[0]; }
-          else { ret.removeAt(t); t--; }
+            for (var tt = 1; tt < tmp.length; tt++) {
+              t++;
+              ret.insert(t, tmp[tt]);
+            }
+          } else if (tmp.isNotEmpty) {
+            ret[t] = tmp[0];
+          } else {
+            ret.removeAt(t);
+            t--;
+          }
         }
       }
     }
@@ -212,21 +269,34 @@ class JSONPath {
 
   static bool _typeCheck(String type, Object? val) {
     switch (type) {
-      case 'scalar': return val == null || val is bool || val is num || val is String;
-      case 'boolean': return val is bool;
-      case 'string': return val is String;
-      case 'undefined': return val == null;
-      case 'function': return false;
-      case 'integer': return val is int || (val is double && val == val.truncateToDouble() && val.isFinite);
-      case 'number': return val is num && val.isFinite;
-      case 'nonFinite': return val is double && !val.isFinite;
-      case 'object': return val != null && val is Map && val is! List;
-      case 'array': return val is List;
-      case 'null': return val == null;
+      case 'scalar':
+        return val == null || val is bool || val is num || val is String;
+      case 'boolean':
+        return val is bool;
+      case 'string':
+        return val is String;
+      case 'undefined':
+        return val == null;
+      case 'function':
+        return false;
+      case 'integer':
+        return val is int ||
+            (val is double && val == val.truncateToDouble() && val.isFinite);
+      case 'number':
+        return val is num && val.isFinite;
+      case 'nonFinite':
+        return val is double && !val.isFinite;
+      case 'object':
+        return val != null && val is Map && val is! List;
+      case 'array':
+        return val is List;
+      case 'null':
+        return val == null;
       case 'other':
         final r = _otherTypeCallback!(val, [], null, null);
         return r is bool ? r : false;
-      default: throw ArgumentError('Unknown value type $type');
+      default:
+        throw ArgumentError('Unknown value type $type');
     }
   }
 
@@ -244,13 +314,19 @@ class JSONPath {
 
   static bool _has(Object? v, Object k) {
     if (v is Map) return v.containsKey(k);
-    if (v is List && k is String) { final i = int.tryParse(k); return i != null && i >= 0 && i < v.length; }
+    if (v is List && k is String) {
+      final i = int.tryParse(k);
+      return i != null && i >= 0 && i < v.length;
+    }
     return false;
   }
 
   static Object? _get(Object? v, Object k) {
     if (v is Map) return v[k];
-    if (v is List && k is String) { final i = int.tryParse(k); return (i != null) ? v[i] : null; }
+    if (v is List && k is String) {
+      final i = int.tryParse(k);
+      return (i != null) ? v[i] : null;
+    }
     return null;
   }
 
@@ -258,19 +334,27 @@ class JSONPath {
   static bool _isObj(Object? v) => v != null && (v is Map || v is List);
 
   static List<JsonPathMatch>? _doSlice(
-    String loc, List<String> expr, Object? val, List<String> path,
-    Object? parent, String? ppn, callback,
+    String loc,
+    List<String> expr,
+    Object? val,
+    List<String> path,
+    Object? parent,
+    String? ppn,
+    callback,
   ) {
     if (val is! List) return null;
     final len = val.length;
     final parts = loc.split(':');
-    final step = (parts.length > 2 && parts[2].isNotEmpty) ? int.parse(parts[2]) : 1;
+    final step =
+        (parts.length > 2 && parts[2].isNotEmpty) ? int.parse(parts[2]) : 1;
     if (step == 0) return [];
     // Defaults differ for forward vs reverse slices
     final defStart = step > 0 ? 0 : len - 1;
     final defEnd = step > 0 ? len : -1;
     var start = (parts[0].isNotEmpty) ? int.parse(parts[0]) : defStart;
-    var end = (parts.length > 1 && parts[1].isNotEmpty) ? int.parse(parts[1]) : defEnd;
+    var end = (parts.length > 1 && parts[1].isNotEmpty)
+        ? int.parse(parts[1])
+        : defEnd;
     // Handle negative indices relative to length.
     // For reverse slices with default end (-1 sentinel), keep end at -1 so
     // the loop iterates down to index 0 (i > -1 means i=2,1,0).
@@ -284,12 +368,15 @@ class JSONPath {
     if (step > 0) end = min(len, end);
     final ret = <JsonPathMatch>[];
     for (var i = start; (step > 0 ? i < end : i > end); i += step) {
-      ret.addAll(_trace([i.toString(), ...expr], val, path, parent, ppn, callback, true, false));
+      ret.addAll(_trace([i.toString(), ...expr], val, path, parent, ppn,
+          callback, true, false));
     }
     return ret;
   }
 
-  static bool _filter(String code, Object? v, String vn, List<String> path, Object? parent, String? ppn, {bool ignoreErrors = false}) {
+  static bool _filter(String code, Object? v, String vn, List<String> path,
+      Object? parent, String? ppn,
+      {bool ignoreErrors = false}) {
     _sandbox[r'_$_parentProperty'] = ppn;
     _sandbox[r'_$_parent'] = parent;
     _sandbox[r'_$_property'] = vn;
@@ -297,15 +384,18 @@ class JSONPath {
     // key(@) — RFC 9535-style member key (or array index) of the current
     // node; equivalent to the @property magic variable.
     _sandbox['key'] = BuiltInFunction((_) => vn);
-    if (code.contains('@path')) _sandbox[r'_$_path'] = toPathString([...path, vn]);
+    if (code.contains('@path')) {
+      _sandbox[r'_$_path'] = toPathString([...path, vn]);
+    }
 
     var script = code
-      .replaceAll('@parentProperty', r'_$_parentProperty')
-      .replaceAll('@parent', r'_$_parent')
-      .replaceAll('@property', r'_$_property')
-      .replaceAll('@root', r'_$_root');
+        .replaceAll('@parentProperty', r'_$_parentProperty')
+        .replaceAll('@parent', r'_$_parent')
+        .replaceAll('@property', r'_$_property')
+        .replaceAll('@root', r'_$_root');
     // Replace all lone @ with _$_v (e.g. !@ → !_$_v, @ === 5 → _$_v === 5)
-    script = script.replaceAllMapped(RegExp(r'@(?![a-zA-Z0-9_])'), (m) => r'_$_v');
+    script =
+        script.replaceAllMapped(RegExp(r'@(?![a-zA-Z0-9_])'), (m) => r'_$_v');
     if (code.contains('@path')) script = script.replaceAll('@path', r'_$_path');
 
     try {
@@ -317,7 +407,8 @@ class JSONPath {
     }
   }
 
-  static Object? _dynamic(String code, Object? val, Object lastPath, Object? parent, String? ppn) {
+  static Object? _dynamic(
+      String code, Object? val, Object lastPath, Object? parent, String? ppn) {
     _sandbox[r'_$_parentProperty'] = ppn;
     _sandbox[r'_$_parent'] = parent;
     _sandbox[r'_$_property'] = lastPath.toString();
@@ -325,18 +416,21 @@ class JSONPath {
     _sandbox['key'] = BuiltInFunction((_) => lastPath.toString());
 
     var script = code
-      .replaceAll('@parentProperty', r'_$_parentProperty')
-      .replaceAll('@parent', r'_$_parent')
-      .replaceAll('@property', r'_$_property')
-      .replaceAll('@root', r'_$_root');
+        .replaceAll('@parentProperty', r'_$_parentProperty')
+        .replaceAll('@parent', r'_$_parent')
+        .replaceAll('@property', r'_$_property')
+        .replaceAll('@root', r'_$_root');
     // Replace @. @space @) @[ with _$_v prefix
     script = script.replaceAllMapped(RegExp(r'@(\.)'), (m) => r'_$_v' + m[1]!);
     script = script.replaceAllMapped(RegExp(r'@(\s)'), (m) => r'_$_v' + m[1]!);
     script = script.replaceAllMapped(RegExp(r'@(\))'), (m) => r'_$_v' + m[1]!);
     script = script.replaceAllMapped(RegExp(r'@(\[)'), (m) => r'_$_v' + m[1]!);
 
-    try { return SafeEval.evaluate(script, _sandbox); }
-    catch (e) { rethrow; }
+    try {
+      return SafeEval.evaluate(script, _sandbox);
+    } catch (e) {
+      rethrow;
+    }
   }
 
   // ── Public static utility methods ──
@@ -347,7 +441,8 @@ class JSONPath {
     }
     final subx = <String>[];
     var n = expr.replaceAllMapped(
-      RegExp(r'@(?:null|boolean|number|string|integer|undefined|nonFinite|scalar|array|object|function|other)\(\)'),
+      RegExp(
+          r'@(?:null|boolean|number|string|integer|undefined|nonFinite|scalar|array|object|function|other)\(\)'),
       (m) => ';${m[0]};',
     );
     // Normalize backtick-escaped properties: .`ident` → ['ident']
@@ -371,8 +466,8 @@ class JSONPath {
       },
     );
     // Escape dots/tildes in bracket-quoted properties
-    n = n.replaceAllMapped(RegExp(r"""\[['"]([^'"]*?)['"]\]"""), (m) =>
-      "['${m[1]!.replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
+    n = n.replaceAllMapped(RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
+        (m) => "['${m[1]!.replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
     n = n.replaceAll('~', ';~;');
     n = n.replaceAll(RegExp(r"""['"]?\.['"]?(?![^[]*\])|\[['"]?"""), ';');
     n = n.replaceAll('%@%', '.');
@@ -415,7 +510,8 @@ class JSONPath {
     var p = '';
     for (var i = 1; i < path.length; i++) {
       if (!RegExp(r'^(~|\^|@.*?\(\))$').hasMatch(path[i])) {
-        p += '/${path[i].toString().replaceAll('~', '~0').replaceAll('/', '~1')}';
+        p +=
+            '/${path[i].toString().replaceAll('~', '~0').replaceAll('/', '~1')}';
       }
     }
     return p;

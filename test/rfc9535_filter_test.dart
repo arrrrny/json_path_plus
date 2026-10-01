@@ -124,12 +124,12 @@ void main() {
     });
 
     test(r'$.items[?(@.price > 10)] — paren form still works (regression)', () {
-      final result =
-          JSONPath.query(r'$.items[?(@.price > 10)].name', items);
+      final result = JSONPath.query(r'$.items[?(@.price > 10)].name', items);
       expect(result, ['banana']);
     });
 
-    test(r'bare filter with logical operators: $.items[?@.price > 5 && @.price < 20]',
+    test(
+        r'bare filter with logical operators: $.items[?@.price > 5 && @.price < 20]',
         () {
       final result =
           JSONPath.query(r'$.items[?@.price > 5 && @.price < 20].name', items);
@@ -140,8 +140,14 @@ void main() {
         () {
       final data = {
         'items': [
-          {'tags': ['x'], 'n': 1},
-          {'tags': ['y'], 'n': 2},
+          {
+            'tags': ['x'],
+            'n': 1
+          },
+          {
+            'tags': ['y'],
+            'n': 2
+          },
         ],
       };
       final result = JSONPath.query(r"""$.items[?@.tags[0] === 'y'].n""", data);
@@ -152,8 +158,19 @@ void main() {
       // Consecutive selectors drill down: the bare filter keeps members with
       // ok=true, then .inner (an array) is filtered by the paren form.
       final data = {
-        'a': {'ok': true, 'inner': [{'v': 1}, {'v': 2}]},
-        'b': {'ok': false, 'inner': [{'v': 3}]},
+        'a': {
+          'ok': true,
+          'inner': [
+            {'v': 1},
+            {'v': 2}
+          ]
+        },
+        'b': {
+          'ok': false,
+          'inner': [
+            {'v': 3}
+          ]
+        },
       };
       final result = JSONPath.query(r'$[?@.ok].inner[?(@.v === 2)]', data);
       expect(result, [
@@ -172,7 +189,8 @@ void main() {
 
     test('match() is a full match: match(@.name, "b") matches nothing', () {
       // Neither "abc" nor "bbc" is exactly "b" — full match required.
-      final result = JSONPath.query(r'$.items[?match(@.name, "b")].price', data);
+      final result =
+          JSONPath.query(r'$.items[?match(@.name, "b")].price', data);
       expect(result, isEmpty);
     });
 
@@ -245,7 +263,9 @@ void main() {
     });
 
     test('key(@) in array context returns the index as a string', () {
-      final d = {'items': ['a', 'b', 'c']};
+      final d = {
+        'items': ['a', 'b', 'c']
+      };
       final result = JSONPath.query(r'$.items[?key(@) === "1"]', d);
       expect(result, ['b']);
     });

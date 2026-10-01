@@ -102,13 +102,20 @@ class Tokenizer {
 
       final ch = input[pos];
 
-      if (_isDigit(ch) || (ch == '.' && pos + 1 < input.length && _isDigit(input[pos + 1]))) {
+      if (_isDigit(ch) ||
+          (ch == '.' && pos + 1 < input.length && _isDigit(input[pos + 1]))) {
         tokens.add(_readNumber());
       } else if (ch == "'" || ch == '"') {
         tokens.add(_readString());
       } else if (_isIdentStart(ch)) {
         tokens.add(_readIdentifierOrKeyword());
-      } else if (ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == ',' || ch == '.' || ch == ';') {
+      } else if (ch == '(' ||
+          ch == ')' ||
+          ch == '[' ||
+          ch == ']' ||
+          ch == ',' ||
+          ch == '.' ||
+          ch == ';') {
         tokens.add(Token('punc', ch));
         pos++;
       } else if (_isOperatorStart(ch)) {
@@ -198,9 +205,33 @@ class Tokenizer {
     // Try to match longest operator first
     final remaining = input.substring(pos);
     final ops = [
-      '===', '!==', '&&', '||', '<=', '>=', '==', '!=',
-      '<<', '>>', '>>>', '++', '--', '+', '-', '*', '/', '%',
-      '&', '|', '^', '~', '<', '>', '!', '?', ':',
+      '===',
+      '!==',
+      '&&',
+      '||',
+      '<=',
+      '>=',
+      '==',
+      '!=',
+      '<<',
+      '>>',
+      '>>>',
+      '++',
+      '--',
+      '+',
+      '-',
+      '*',
+      '/',
+      '%',
+      '&',
+      '|',
+      '^',
+      '~',
+      '<',
+      '>',
+      '!',
+      '?',
+      ':',
     ];
     for (final op in ops) {
       if (remaining.startsWith(op)) {
@@ -214,15 +245,15 @@ class Tokenizer {
   }
 
   bool _isDigit(String ch) => ch.codeUnitAt(0) >= 48 && ch.codeUnitAt(0) <= 57;
-  bool _isWhitespace(String ch) => ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+  bool _isWhitespace(String ch) =>
+      ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
   bool _isIdentStart(String ch) =>
       (ch.codeUnitAt(0) >= 65 && ch.codeUnitAt(0) <= 90) || // A-Z
       (ch.codeUnitAt(0) >= 97 && ch.codeUnitAt(0) <= 122) || // a-z
-      ch == '_' || ch == '\$';
-  bool _isIdentPart(String ch) =>
-      _isIdentStart(ch) || _isDigit(ch);
-  bool _isOperatorStart(String ch) =>
-      '+-*/%&|^~<>!=?:'.contains(ch);
+      ch == '_' ||
+      ch == '\$';
+  bool _isIdentPart(String ch) => _isIdentStart(ch) || _isDigit(ch);
+  bool _isOperatorStart(String ch) => '+-*/%&|^~<>!=?:'.contains(ch);
 }
 
 // ── Parser ──
@@ -572,19 +603,26 @@ class SafeEval {
       case '===':
         return _deepEquals(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '!==':
-        return !_deepEquals(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return !_deepEquals(
+            _evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '==':
-        return _looseEquals(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return _looseEquals(
+            _evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '!=':
-        return !_looseEquals(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return !_looseEquals(
+            _evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '<':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) < 0;
+        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <
+            0;
       case '>':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) > 0;
+        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >
+            0;
       case '<=':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <= 0;
+        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <=
+            0;
       case '>=':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >= 0;
+        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >=
+            0;
       case '+':
         final l = _evalAst(ast.left, subs);
         final r = _evalAst(ast.right, subs);
@@ -592,13 +630,17 @@ class SafeEval {
         if (l is String || r is String) return '${l ?? ''}${r ?? ''}';
         return _toNum(l) + _toNum(r);
       case '-':
-        return _toNum(_evalAst(ast.left, subs)) - _toNum(_evalAst(ast.right, subs));
+        return _toNum(_evalAst(ast.left, subs)) -
+            _toNum(_evalAst(ast.right, subs));
       case '*':
-        return _toNum(_evalAst(ast.left, subs)) * _toNum(_evalAst(ast.right, subs));
+        return _toNum(_evalAst(ast.left, subs)) *
+            _toNum(_evalAst(ast.right, subs));
       case '/':
-        return _toNum(_evalAst(ast.left, subs)) / _toNum(_evalAst(ast.right, subs));
+        return _toNum(_evalAst(ast.left, subs)) /
+            _toNum(_evalAst(ast.right, subs));
       case '%':
-        return _toNum(_evalAst(ast.left, subs)) % _toNum(_evalAst(ast.right, subs));
+        return _toNum(_evalAst(ast.left, subs)) %
+            _toNum(_evalAst(ast.right, subs));
       case '|':
         return (_toNum(_evalAst(ast.left, subs)).toInt()) |
             (_toNum(_evalAst(ast.right, subs)).toInt());
@@ -657,10 +699,18 @@ class SafeEval {
     // Return a method proxy for known string methods
     if (obj is String) {
       switch (prop) {
-        case 'indexOf': case 'includes': case 'startsWith':
-        case 'endsWith': case 'charAt': case 'substring':
-        case 'toLowerCase': case 'toUpperCase': case 'trim':
-        case 'split': case 'replace': case 'match':
+        case 'indexOf':
+        case 'includes':
+        case 'startsWith':
+        case 'endsWith':
+        case 'charAt':
+        case 'substring':
+        case 'toLowerCase':
+        case 'toUpperCase':
+        case 'trim':
+        case 'split':
+        case 'replace':
+        case 'match':
           return _MethodProxy(obj, prop);
         case 'toString':
           return _MethodProxy(obj, 'toString');
@@ -670,7 +720,9 @@ class SafeEval {
     // Return a method proxy for list methods
     if (obj is List) {
       switch (prop) {
-        case 'indexOf': case 'includes': case 'join':
+        case 'indexOf':
+        case 'includes':
+        case 'join':
           return _MethodProxy(obj, prop);
         case 'toString':
           return _MethodProxy(obj, 'toString');
@@ -821,17 +873,24 @@ class _MethodProxy {
       switch (_methodName) {
         case 'indexOf':
           if (args.isNotEmpty && args[0] is String) {
-            return target.indexOf(args[0] as String, args.length > 1 && args[1] is int ? args[1] as int : 0);
+            return target.indexOf(args[0] as String,
+                args.length > 1 && args[1] is int ? args[1] as int : 0);
           }
           return -1;
         case 'includes':
-          if (args.isNotEmpty && args[0] is String) return target.contains(args[0] as String);
+          if (args.isNotEmpty && args[0] is String) {
+            return target.contains(args[0] as String);
+          }
           return false;
         case 'startsWith':
-          if (args.isNotEmpty && args[0] is String) return target.startsWith(args[0] as String);
+          if (args.isNotEmpty && args[0] is String) {
+            return target.startsWith(args[0] as String);
+          }
           return false;
         case 'endsWith':
-          if (args.isNotEmpty && args[0] is String) return target.endsWith(args[0] as String);
+          if (args.isNotEmpty && args[0] is String) {
+            return target.endsWith(args[0] as String);
+          }
           return false;
         case 'charAt':
           if (args.isNotEmpty && args[0] is int) {
@@ -854,7 +913,9 @@ class _MethodProxy {
         case 'trim':
           return target.trim();
         case 'split':
-          if (args.isNotEmpty && args[0] is String) return target.split(args[0] as String);
+          if (args.isNotEmpty && args[0] is String) {
+            return target.split(args[0] as String);
+          }
           return [target];
         case 'replace':
           if (args.length >= 2 && args[0] is String && args[1] is String) {
@@ -893,8 +954,8 @@ class _MethodProxy {
           }
           return false;
         case 'join':
-          return target.map((e) => e?.toString() ?? 'null')
-              .join(args.isNotEmpty && args[0] is String ? args[0] as String : ',');
+          return target.map((e) => e?.toString() ?? 'null').join(
+              args.isNotEmpty && args[0] is String ? args[0] as String : ',');
         case 'toString':
           return target.toString();
       }
