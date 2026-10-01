@@ -6,7 +6,10 @@
 /// Supports:
 /// - Property access: `obj.key`, `obj[key]`
 /// - Method calls: `.indexOf(arg)`, `.includes(arg)`, `.startsWith(prefix)`,
-///   `.endsWith(suffix)`, `.length`, `.toString()`
+///   `.endsWith(suffix)`, `.length`, `.toString()`, `.match(pattern)`
+/// - Built-in filter functions (RFC 9535 §2.4.6–2.4.7):
+///   `match(value, pattern)` (full match), `search(value, pattern)`
+///   (substring match) — non-string values and invalid patterns yield false
 /// - Comparisons: `===`, `==`, `!==`, `!=`, `<`, `>`, `<=`, `>=`
 /// - Boolean operators: `&&`, `||`, `!`
 /// - Arithmetic: `+`, `-`, `*`, `/`, `%`
@@ -16,6 +19,7 @@
 /// - Ternary: `cond ? a : b`
 /// - Parentheses for grouping
 /// - `typeof`, unary `-`, `+`
+library;
 
 // ── AST Nodes ──
 
@@ -98,13 +102,20 @@ class Tokenizer {
 
       final ch = input[pos];
 
-      if (_isDigit(ch) || (ch == '.' && pos + 1 < input.length && _isDigit(input[pos + 1]))) {
+      if (_isDigit(ch) ||
+          (ch == '.' && pos + 1 < input.length && _isDigit(input[pos + 1]))) {
         tokens.add(_readNumber());
       } else if (ch == "'" || ch == '"') {
         tokens.add(_readString());
       } else if (_isIdentStart(ch)) {
         tokens.add(_readIdentifierOrKeyword());
-      } else if (ch == '(' || ch == ')' || ch == '[' || ch == ']' || ch == ',' || ch == '.' || ch == ';') {
+      } else if (ch == '(' ||
+          ch == ')' ||
+          ch == '[' ||
+          ch == ']' ||
+          ch == ',' ||
+          ch == '.' ||
+          ch == ';') {
         tokens.add(Token('punc', ch));
         pos++;
       } else if (_isOperatorStart(ch)) {
@@ -194,9 +205,33 @@ class Tokenizer {
     // Try to match longest operator first
     final remaining = input.substring(pos);
     final ops = [
-      '===', '!==', '&&', '||', '<=', '>=', '==', '!=',
-      '<<', '>>', '>>>', '++', '--', '+', '-', '*', '/', '%',
-      '&', '|', '^', '~', '<', '>', '!', '?', ':',
+      '===',
+      '!==',
+      '&&',
+      '||',
+      '<=',
+      '>=',
+      '==',
+      '!=',
+      '<<',
+      '>>',
+      '>>>',
+      '++',
+      '--',
+      '+',
+      '-',
+      '*',
+      '/',
+      '%',
+      '&',
+      '|',
+      '^',
+      '~',
+      '<',
+      '>',
+      '!',
+      '?',
+      ':',
     ];
     for (final op in ops) {
       if (remaining.startsWith(op)) {
@@ -210,15 +245,15 @@ class Tokenizer {
   }
 
   bool _isDigit(String ch) => ch.codeUnitAt(0) >= 48 && ch.codeUnitAt(0) <= 57;
-  bool _isWhitespace(String ch) => ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+  bool _isWhitespace(String ch) =>
+      ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
   bool _isIdentStart(String ch) =>
       (ch.codeUnitAt(0) >= 65 && ch.codeUnitAt(0) <= 90) || // A-Z
       (ch.codeUnitAt(0) >= 97 && ch.codeUnitAt(0) <= 122) || // a-z
-      ch == '_' || ch == '\$';
-  bool _isIdentPart(String ch) =>
-      _isIdentStart(ch) || _isDigit(ch);
-  bool _isOperatorStart(String ch) =>
-      '+-*/%&|^~<>!=?:'.contains(ch);
+      ch == '_' ||
+      ch == '\$';
+  bool _isIdentPart(String ch) => _isIdentStart(ch) || _isDigit(ch);
+  bool _isOperatorStart(String ch) => '+-*/%&|^~<>!=?:'.contains(ch);
 }
 
 // ── Parser ──
@@ -484,12 +519,45 @@ class Parser {
 class SafeEval {
   /// Parse and evaluate a JS-style expression string with the given
   /// variable bindings.
+  ///
+  /// The RFC 9535 `match()` and `search()` function extensions are always
+  /// available; entries in [context] shadow them.
   static Object? evaluate(String code, Map<String, Object?> context) {
+    final subs = <String, Object?>{
+      'match': BuiltInFunction(_rfcMatch),
+      'search': BuiltInFunction(_rfcSearch),
+      ...context,
+    };
     final tokenizer = Tokenizer(code);
     final tokens = tokenizer.tokenize();
     final parser = Parser(tokens);
     final ast = parser.parse();
-    return _evalAst(ast, context);
+    return _evalAst(ast, subs);
+  }
+
+  /// RFC 9535 §2.4.6 `match()`: true iff the entirety of the string matches
+  /// the pattern. Non-string values and invalid patterns yield false.
+  static bool _rfcMatch(List<Object?> args) =>
+      _rfcStringMatch(args, partial: false);
+
+  /// RFC 9535 §2.4.7 `search()`: true iff the string contains a match of the
+  /// pattern. Non-string values and invalid patterns yield false.
+  static bool _rfcSearch(List<Object?> args) =>
+      _rfcStringMatch(args, partial: true);
+
+  static bool _rfcStringMatch(List<Object?> args, {required bool partial}) {
+    if (args.length != 2) return false;
+    final value = args[0];
+    final pattern = args[1];
+    if (value is! String || pattern is! String) return false;
+    final RegExp regex;
+    try {
+      // match() is anchored: the pattern must cover the entire string.
+      regex = RegExp(partial ? pattern : '^(?:$pattern)\$');
+    } on FormatException {
+      return false; // invalid pattern → LogicalFalse (RFC 9535)
+    }
+    return regex.hasMatch(value);
   }
 
   static Object? _evalAst(Expr ast, Map<String, Object?> subs) {
@@ -535,19 +603,26 @@ class SafeEval {
       case '===':
         return _deepEquals(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '!==':
-        return !_deepEquals(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return !_deepEquals(
+            _evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '==':
-        return _looseEquals(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return _looseEquals(
+            _evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '!=':
-        return !_looseEquals(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return !_looseEquals(
+            _evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '<':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) < 0;
+        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <
+            0;
       case '>':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) > 0;
+        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >
+            0;
       case '<=':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <= 0;
+        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <=
+            0;
       case '>=':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >= 0;
+        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >=
+            0;
       case '+':
         final l = _evalAst(ast.left, subs);
         final r = _evalAst(ast.right, subs);
@@ -555,13 +630,17 @@ class SafeEval {
         if (l is String || r is String) return '${l ?? ''}${r ?? ''}';
         return _toNum(l) + _toNum(r);
       case '-':
-        return _toNum(_evalAst(ast.left, subs)) - _toNum(_evalAst(ast.right, subs));
+        return _toNum(_evalAst(ast.left, subs)) -
+            _toNum(_evalAst(ast.right, subs));
       case '*':
-        return _toNum(_evalAst(ast.left, subs)) * _toNum(_evalAst(ast.right, subs));
+        return _toNum(_evalAst(ast.left, subs)) *
+            _toNum(_evalAst(ast.right, subs));
       case '/':
-        return _toNum(_evalAst(ast.left, subs)) / _toNum(_evalAst(ast.right, subs));
+        return _toNum(_evalAst(ast.left, subs)) /
+            _toNum(_evalAst(ast.right, subs));
       case '%':
-        return _toNum(_evalAst(ast.left, subs)) % _toNum(_evalAst(ast.right, subs));
+        return _toNum(_evalAst(ast.left, subs)) %
+            _toNum(_evalAst(ast.right, subs));
       case '|':
         return (_toNum(_evalAst(ast.left, subs)).toInt()) |
             (_toNum(_evalAst(ast.right, subs)).toInt());
@@ -620,10 +699,18 @@ class SafeEval {
     // Return a method proxy for known string methods
     if (obj is String) {
       switch (prop) {
-        case 'indexOf': case 'includes': case 'startsWith':
-        case 'endsWith': case 'charAt': case 'substring':
-        case 'toLowerCase': case 'toUpperCase': case 'trim':
-        case 'split': case 'replace':
+        case 'indexOf':
+        case 'includes':
+        case 'startsWith':
+        case 'endsWith':
+        case 'charAt':
+        case 'substring':
+        case 'toLowerCase':
+        case 'toUpperCase':
+        case 'trim':
+        case 'split':
+        case 'replace':
+        case 'match':
           return _MethodProxy(obj, prop);
         case 'toString':
           return _MethodProxy(obj, 'toString');
@@ -633,7 +720,9 @@ class SafeEval {
     // Return a method proxy for list methods
     if (obj is List) {
       switch (prop) {
-        case 'indexOf': case 'includes': case 'join':
+        case 'indexOf':
+        case 'includes':
+        case 'join':
           return _MethodProxy(obj, prop);
         case 'toString':
           return _MethodProxy(obj, 'toString');
@@ -690,6 +779,10 @@ class SafeEval {
 
     // Fallback: try to evaluate callee directly
     final callee = _evalAst(ast.callee, subs);
+    if (callee is BuiltInFunction) {
+      final args = ast.arguments.map((a) => _evalAst(a, subs)).toList();
+      return callee.call(args);
+    }
     if (callee is _MethodProxy) {
       final args = ast.arguments.map((a) => _evalAst(a, subs)).toList();
       return callee.call(args);
@@ -768,8 +861,6 @@ num _toNum(Object? val) {
 }
 
 /// Internal callable proxy for method invocations.
-
-/// Internal callable proxy for method invocations.
 class _MethodProxy {
   final Object? _target;
   final String _methodName;
@@ -782,17 +873,24 @@ class _MethodProxy {
       switch (_methodName) {
         case 'indexOf':
           if (args.isNotEmpty && args[0] is String) {
-            return target.indexOf(args[0] as String, args.length > 1 && args[1] is int ? args[1] as int : 0);
+            return target.indexOf(args[0] as String,
+                args.length > 1 && args[1] is int ? args[1] as int : 0);
           }
           return -1;
         case 'includes':
-          if (args.isNotEmpty && args[0] is String) return target.contains(args[0] as String);
+          if (args.isNotEmpty && args[0] is String) {
+            return target.contains(args[0] as String);
+          }
           return false;
         case 'startsWith':
-          if (args.isNotEmpty && args[0] is String) return target.startsWith(args[0] as String);
+          if (args.isNotEmpty && args[0] is String) {
+            return target.startsWith(args[0] as String);
+          }
           return false;
         case 'endsWith':
-          if (args.isNotEmpty && args[0] is String) return target.endsWith(args[0] as String);
+          if (args.isNotEmpty && args[0] is String) {
+            return target.endsWith(args[0] as String);
+          }
           return false;
         case 'charAt':
           if (args.isNotEmpty && args[0] is int) {
@@ -815,13 +913,25 @@ class _MethodProxy {
         case 'trim':
           return target.trim();
         case 'split':
-          if (args.isNotEmpty && args[0] is String) return target.split(args[0] as String);
+          if (args.isNotEmpty && args[0] is String) {
+            return target.split(args[0] as String);
+          }
           return [target];
         case 'replace':
           if (args.length >= 2 && args[0] is String && args[1] is String) {
             return target.replaceAll(args[0] as String, args[1] as String);
           }
           return target;
+        case 'match':
+          // JS-like first match: returns the matching substring or null.
+          if (args.isNotEmpty && args[0] is String) {
+            try {
+              return RegExp(args[0] as String).stringMatch(target);
+            } on FormatException {
+              return null;
+            }
+          }
+          return null;
         case 'toString':
           return target;
       }
@@ -844,8 +954,8 @@ class _MethodProxy {
           }
           return false;
         case 'join':
-          return target.map((e) => e?.toString() ?? 'null')
-              .join(args.isNotEmpty && args[0] is String ? args[0] as String : ',');
+          return target.map((e) => e?.toString() ?? 'null').join(
+              args.isNotEmpty && args[0] is String ? args[0] as String : ',');
         case 'toString':
           return target.toString();
       }
@@ -863,4 +973,16 @@ class _MethodProxy {
 
     throw StateError('Cannot call $_methodName on ${target.runtimeType}');
   }
+}
+
+/// A built-in function callable from sandboxed filter expressions
+/// (e.g. the RFC 9535 `match()` / `search()` extensions, or the filter
+/// context's `key()`). Resolved by identifier before user sandbox entries,
+/// which may shadow it.
+class BuiltInFunction {
+  final Object? Function(List<Object?> args) _fn;
+
+  BuiltInFunction(this._fn);
+
+  Object? call(List<Object?> args) => _fn(args);
 }

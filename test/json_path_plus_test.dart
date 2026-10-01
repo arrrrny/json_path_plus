@@ -9,15 +9,26 @@ void main() {
 
   group('A. Basic path syntax', () {
     test(r'$.store.book[0].title — standard dot + bracket', () {
-      final data = {'store': {'book': [{'title': 'A'}]}};
+      final data = {
+        'store': {
+          'book': [
+            {'title': 'A'}
+          ]
+        }
+      };
       final result = JSONPath.query(r'$.store.book[0].title', data);
       expect(result, equals(['A']));
     });
 
     test(r"$['store']['book'][0]['title'] — bracket notation", () {
-      final data = {'store': {'book': [{'title': 'A'}]}};
-      final result =
-          JSONPath.query(r"$['store']['book'][0]['title']", data);
+      final data = {
+        'store': {
+          'book': [
+            {'title': 'A'}
+          ]
+        }
+      };
+      final result = JSONPath.query(r"$['store']['book'][0]['title']", data);
       expect(result, equals(['A']));
     });
 
@@ -36,13 +47,25 @@ void main() {
     });
 
     test(r'$..title — recursive descent', () {
-      final data = {'store': {'book': [{'title': 'A'}]}};
+      final data = {
+        'store': {
+          'book': [
+            {'title': 'A'}
+          ]
+        }
+      };
       final result = JSONPath.query(r'$..title', data);
       expect(result, equals(['A']));
     });
 
     test(r'$..book[0] — recursive descent + index', () {
-      final data = {'store': {'book': [{'title': 'A'}]}};
+      final data = {
+        'store': {
+          'book': [
+            {'title': 'A'}
+          ]
+        }
+      };
       final result = JSONPath.query(r'$..book[0]', data);
       expect(result.length, equals(1));
       expect((result[0] as Map).containsKey('title'), isTrue);
@@ -50,14 +73,26 @@ void main() {
     });
 
     test(r'$..book[*] — recursive descent + wildcard', () {
-      final data = {'store': {'book': [{'title': 'A'}]}};
+      final data = {
+        'store': {
+          'book': [
+            {'title': 'A'}
+          ]
+        }
+      };
       final result = JSONPath.query(r'$..book[*]', data);
       expect(result.length, equals(1));
       expect((result[0] as Map)['title'], equals('A'));
     });
 
     test(r"$['store']['book'][0] — returns the whole object", () {
-      final data = {'store': {'book': [{'title': 'A'}]}};
+      final data = {
+        'store': {
+          'book': [
+            {'title': 'A'}
+          ]
+        }
+      };
       final result = JSONPath.query(r"$['store']['book'][0]", data);
       expect(result.length, equals(1));
       expect((result[0] as Map)['title'], equals('A'));
@@ -66,7 +101,11 @@ void main() {
     test(r'Root $ returns root', () {
       final data = {'a': 1};
       final result = JSONPath.query(r'$', data);
-      expect(result, equals([{'a': 1}]));
+      expect(
+          result,
+          equals([
+            {'a': 1}
+          ]));
     });
   });
 
@@ -154,7 +193,8 @@ void main() {
       ''') as Map<String, dynamic>;
 
       final result = JSONPath.evaluate(JsonPathOptions(
-        path: r'$.productInfo.filmStripUrl[*][?(@property.indexOf("zoomImageUrl") === 0)]',
+        path:
+            r'$.productInfo.filmStripUrl[*][?(@property.indexOf("zoomImageUrl") === 0)]',
         json: data,
         resultType: 'value',
       ));
@@ -189,8 +229,14 @@ void main() {
     test('@.nested.key access', () {
       final data = {
         'items': [
-          {'meta': {'level': 1}, 'name': 'first'},
-          {'meta': {'level': 2}, 'name': 'second'},
+          {
+            'meta': {'level': 1},
+            'name': 'first'
+          },
+          {
+            'meta': {'level': 2},
+            'name': 'second'
+          },
         ],
       };
       final result = JSONPath.query(
@@ -201,7 +247,9 @@ void main() {
     });
 
     test('Comparisons: ===, !==, <, >, <=, >=', () {
-      final data = {'items': [1, 5, 9]};
+      final data = {
+        'items': [1, 5, 9]
+      };
       expect(
         JSONPath.query(r'$.items[?(@ === 5)]', data),
         equals([5]),
@@ -235,7 +283,9 @@ void main() {
     });
 
     test('String method: .indexOf()', () {
-      final data = {'items': ['hello', 'world', 'hello world']};
+      final data = {
+        'items': ['hello', 'world', 'hello world']
+      };
       final result = JSONPath.query(
         r"$.items[?(@.indexOf('world') !== -1)]",
         data,
@@ -244,7 +294,9 @@ void main() {
     });
 
     test('String method: .includes()', () {
-      final data = {'items': ['foo', 'foobar', 'baz']};
+      final data = {
+        'items': ['foo', 'foobar', 'baz']
+      };
       final result = JSONPath.query(
         r"$.items[?(@.includes('foo'))]",
         data,
@@ -253,7 +305,9 @@ void main() {
     });
 
     test('String method: .startsWith()', () {
-      final data = {'items': ['apple', 'apricot', 'banana']};
+      final data = {
+        'items': ['apple', 'apricot', 'banana']
+      };
       final result = JSONPath.query(
         r"$.items[?(@.startsWith('ap'))]",
         data,
@@ -262,7 +316,9 @@ void main() {
     });
 
     test('String method: .endsWith()', () {
-      final data = {'items': ['cat', 'bat', 'dog']};
+      final data = {
+        'items': ['cat', 'bat', 'dog']
+      };
       final result = JSONPath.query(
         r"$.items[?(@.endsWith('at'))]",
         data,
@@ -271,7 +327,9 @@ void main() {
     });
 
     test('Arithmetic in filter', () {
-      final data = {'items': [1, 2, 3, 4, 5]};
+      final data = {
+        'items': [1, 2, 3, 4, 5]
+      };
       final result = JSONPath.query(
         r'$.items[?(@ * 2 > 6)]',
         data,
@@ -280,7 +338,9 @@ void main() {
     });
 
     test('Negation operator !', () {
-      final data = {'items': [true, false, null, 0]};
+      final data = {
+        'items': [true, false, null, 0]
+      };
       final result = JSONPath.query(
         r'$.items[?(!@)]',
         data,
@@ -289,7 +349,9 @@ void main() {
     });
 
     test('Ternary operator', () {
-      final data = {'items': [1, 2, 3]};
+      final data = {
+        'items': [1, 2, 3]
+      };
       final result = JSONPath.query(
         r'$.items[?(@ > 1 ? true : false)]',
         data,
@@ -304,57 +366,90 @@ void main() {
 
   group('D. Type operators', () {
     test('@string() keeps strings', () {
-      final data = {'items': ['hello', 42, true, null]};
+      final data = {
+        'items': ['hello', 42, true, null]
+      };
       final result = JSONPath.query(r'$.items[*]@string()', data);
       expect(result, equals(['hello']));
     });
 
     test('@number() keeps numbers', () {
-      final data = {'items': ['hello', 42, 19.99, true, null]};
+      final data = {
+        'items': ['hello', 42, 19.99, true, null]
+      };
       final result = JSONPath.query(r'$.items[*]@number()', data);
       expect(result, equals([42, 19.99]));
     });
 
     test('@integer() keeps integers', () {
-      final data = {'items': [42, 19.99, 3.0, 'hello']};
+      final data = {
+        'items': [42, 19.99, 3.0, 'hello']
+      };
       final result = JSONPath.query(r'$.items[*]@integer()', data);
       expect(result, containsAll([42]));
     });
 
     test('@boolean() keeps booleans', () {
-      final data = {'items': [true, false, 'hello', 42]};
+      final data = {
+        'items': [true, false, 'hello', 42]
+      };
       final result = JSONPath.query(r'$.items[*]@boolean()', data);
       expect(result, equals([true, false]));
     });
 
     test('@null() keeps nulls', () {
-      final data = {'items': [null, 'hello', 42]};
+      final data = {
+        'items': [null, 'hello', 42]
+      };
       final result = JSONPath.query(r'$.items[*]@null()', data);
       expect(result, equals([null]));
     });
 
     test('@array() keeps arrays', () {
-      final data = {'items': [[1, 2], 'hello', {'a': 1}]};
+      final data = {
+        'items': [
+          [1, 2],
+          'hello',
+          {'a': 1}
+        ]
+      };
       final result = JSONPath.query(r'$.items[*]@array()', data);
       expect(result.length, equals(1));
       expect(result[0], equals([1, 2]));
     });
 
     test('@object() keeps objects (maps)', () {
-      final data = {'items': [[1, 2], 'hello', {'a': 1}]};
+      final data = {
+        'items': [
+          [1, 2],
+          'hello',
+          {'a': 1}
+        ]
+      };
       final result = JSONPath.query(r'$.items[*]@object()', data);
       expect(result.length, equals(1));
       expect((result[0] as Map)['a'], equals(1));
     });
 
     test('@scalar() keeps non-object values', () {
-      final data = {'items': ['hello', 42, true, [1], {'a': 1}, null]};
+      final data = {
+        'items': [
+          'hello',
+          42,
+          true,
+          [1],
+          {'a': 1},
+          null
+        ]
+      };
       final result = JSONPath.query(r'$.items[*]@scalar()', data);
       expect(result, equals(['hello', 42, true, null]));
     });
 
     test('@other() with callback', () {
-      final data = {'items': ['a', 'b', 'c']};
+      final data = {
+        'items': ['a', 'b', 'c']
+      };
       final result = JSONPath.evaluate(JsonPathOptions(
         path: r'$.items[*]@other()',
         json: data,
@@ -366,7 +461,9 @@ void main() {
     });
 
     test('@other() throws without callback', () {
-      final data = {'items': ['a']};
+      final data = {
+        'items': ['a']
+      };
       expect(
         () => JSONPath.query(r'$.items[*]@other()', data),
         throwsA(isA<ArgumentError>()),
@@ -380,7 +477,11 @@ void main() {
 
   group('E. ~ property-name and ^ parent selector', () {
     test('~ returns property name', () {
-      final data = {'book': [{'title': 'A'}]};
+      final data = {
+        'book': [
+          {'title': 'A'}
+        ]
+      };
       final result = JSONPath.query(r'$.book[0].title~', data);
       expect(result, equals(['title']));
     });
@@ -523,7 +624,13 @@ void main() {
   group('J. Options', () {
     group('resultType', () {
       test('resultType: "value" (default)', () {
-        final data = {'store': {'book': [{'title': 'A'}]}};
+        final data = {
+          'store': {
+            'book': [
+              {'title': 'A'}
+            ]
+          }
+        };
         final result = JSONPath.evaluate(JsonPathOptions(
           path: r'$.store.book[0].title',
           json: data,
@@ -533,7 +640,13 @@ void main() {
       });
 
       test('resultType: "path"', () {
-        final data = {'store': {'book': [{'title': 'A'}]}};
+        final data = {
+          'store': {
+            'book': [
+              {'title': 'A'}
+            ]
+          }
+        };
         final result = JSONPath.evaluate(JsonPathOptions(
           path: r'$.store.book[0].title',
           json: data,
@@ -543,7 +656,13 @@ void main() {
       });
 
       test('resultType: "pointer"', () {
-        final data = {'store': {'book': [{'title': 'A'}]}};
+        final data = {
+          'store': {
+            'book': [
+              {'title': 'A'}
+            ]
+          }
+        };
         final result = JSONPath.evaluate(JsonPathOptions(
           path: r'$.store.book[0].title',
           json: data,
@@ -553,7 +672,13 @@ void main() {
       });
 
       test('resultType: "parent"', () {
-        final data = {'store': {'book': [{'title': 'A'}]}};
+        final data = {
+          'store': {
+            'book': [
+              {'title': 'A'}
+            ]
+          }
+        };
         final result = JSONPath.evaluate(JsonPathOptions(
           path: r'$.store.book[0].title',
           json: data,
@@ -564,7 +689,13 @@ void main() {
       });
 
       test('resultType: "parentProperty"', () {
-        final data = {'store': {'book': [{'title': 'A'}]}};
+        final data = {
+          'store': {
+            'book': [
+              {'title': 'A'}
+            ]
+          }
+        };
         final result = JSONPath.evaluate(JsonPathOptions(
           path: r'$.store.book[0].title',
           json: data,
@@ -574,7 +705,13 @@ void main() {
       });
 
       test('resultType: "all"', () {
-        final data = {'store': {'book': [{'title': 'A'}]}};
+        final data = {
+          'store': {
+            'book': [
+              {'title': 'A'}
+            ]
+          }
+        };
         final result = JSONPath.evaluate(JsonPathOptions(
           path: r'$.store.book[0].title',
           json: data,
@@ -620,7 +757,9 @@ void main() {
       });
 
       test('wrap: false — multiple results still return list', () {
-        final data = {'items': [1, 2]};
+        final data = {
+          'items': [1, 2]
+        };
         final result = JSONPath.evaluate(JsonPathOptions(
           path: r'$.items[*]',
           json: data,
@@ -632,7 +771,12 @@ void main() {
 
     group('flatten', () {
       test('flatten: true flattens nested arrays', () {
-        final data = {'items': [[1, 2], [3, 4]]};
+        final data = {
+          'items': [
+            [1, 2],
+            [3, 4]
+          ]
+        };
         final result = JSONPath.evaluate(JsonPathOptions(
           path: r'$.items[*]',
           json: data,
@@ -644,7 +788,9 @@ void main() {
 
     group('callback', () {
       test('callback is invoked for each match', () {
-        final data = {'items': ['a', 'b', 'c']};
+        final data = {
+          'items': ['a', 'b', 'c']
+        };
         final captured = <String>[];
         JSONPath.evaluate(JsonPathOptions(
           path: r'$.items[*]',
@@ -664,7 +810,9 @@ void main() {
 
   group('K. eval parameter', () {
     test('eval: false throws on filter expression', () {
-      final data = {'items': [1, 2, 3]};
+      final data = {
+        'items': [1, 2, 3]
+      };
       expect(
         () => JSONPath.evaluate(JsonPathOptions(
           path: r'$.items[?(@ > 1)]',
@@ -688,7 +836,9 @@ void main() {
     });
 
     test('ignoreEvalErrors: true returns false for bad eval', () {
-      final data = {'items': [1, 2, 3]};
+      final data = {
+        'items': [1, 2, 3]
+      };
       final result = JSONPath.evaluate(JsonPathOptions(
         path: r'$.items[?(@.nonexistentMethod())]',
         json: data,
@@ -784,14 +934,20 @@ void main() {
 
     test('nested property access', () {
       expect(
-        SafeEval.evaluate('a.b.c', {'a': {'b': {'c': 42}}}),
+        SafeEval.evaluate('a.b.c', {
+          'a': {
+            'b': {'c': 42}
+          }
+        }),
         equals(42),
       );
     });
 
     test('computed property access', () {
       expect(
-        SafeEval.evaluate("a['b']", {'a': {'b': 'found'}}),
+        SafeEval.evaluate("a['b']", {
+          'a': {'b': 'found'}
+        }),
         equals('found'),
       );
     });
@@ -898,7 +1054,9 @@ void main() {
     });
 
     test('falsy values: 0, empty string, false', () {
-      final data = {'items': [0, '', false, null]};
+      final data = {
+        'items': [0, '', false, null]
+      };
       final result = JSONPath.query(r'$.items[*]', data);
       expect(result, equals([0, '', false, null]));
     });

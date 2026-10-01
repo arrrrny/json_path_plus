@@ -13,6 +13,7 @@ A Dart port of [JSONPath-Plus](https://github.com/JSONPath-Plus/JSONPath) — a 
 
 - **Basic path syntax**: dot notation, bracket notation, wildcards, recursive descent (`..`)
 - **Filter expressions**: `[?(@.price > 10)]` with `@property`, `@parent`, `@root`, `@path`
+- **RFC 9535 filters**: bare filter selectors `[?@.price > 10]` (no parentheses) plus the standard `match()`, `search()`, and `key()` function extensions
 - **Type operators**: `@string()`, `@number()`, `@boolean()`, `@integer()`, `@null()`, `@array()`, `@object()`, `@scalar()`, `@other()`
 - **`~` property-name operator**: returns the key name instead of value
 - **`^` parent selector**: returns the parent of the matched node
@@ -79,6 +80,44 @@ final result = JSONPath.evaluate(JsonPathOptions(
 ));
 print(result); // ["$['store']['book'][1]", "$['store']['book'][2]"]
 ```
+
+### RFC 9535 filter selectors and functions
+
+Standard (RFC 9535) filter syntax works without wrapping parentheses, and the
+standard function extensions are available inside filters:
+
+```dart
+final data = {
+  'data-client-side-metrics-info': {'html': 'foo'},
+  'data-main-slot:search-result-2': {'asin': 'B00KHB2ZIW'},
+  'data-main-slot:search-result-3': {'asin': 'B0DCZS98ZT'},
+};
+
+// Bare filter selector — [? <expr>] with no wrapping parentheses
+final cheap = JSONPath.query(r'$[?@.price > 10]', products);
+
+// match(value, pattern) — the ENTIRE string must match the regex
+final slots = JSONPath.query(
+  r'$[?match(key(@), "data-main-slot:search-result-.*")]',
+  data,
+);
+print(slots.length); // 2
+
+// search(value, pattern) — the string must CONTAIN a match
+final hits = JSONPath.query(r'$[?search(key(@), "search-result")]', data);
+
+// key() — the member key (or array index) of the current node;
+// equivalent to the JSONPath-Plus magic variable @property
+final byKey = JSONPath.query(r'$[?key(@) === "b"]', {'a': 1, 'b': 2});
+print(byKey); // [2]
+```
+
+RFC 9535 semantics notes:
+
+- `match()` requires the **full** string to match (prefix patterns need `.*`); `search()` matches substrings.
+- Both functions return `false` (never throw) when the first argument is not a string or the pattern is an invalid regex.
+- In filter test expressions only `null` and `false` are falsy — `0` and `''` are truthy (per RFC 9535, unlike JS truthiness).
+- Sandbox entries named `match` / `search` shadow the built-ins, which is also how you can supply custom filter functions (wrap them in `BuiltInFunction`).
 
 ### Walgreens-style `@property` filter
 

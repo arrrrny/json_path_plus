@@ -6,6 +6,10 @@
 /// the `~` property-name operator, the `^` parent-selector operator,
 /// Python-style array slices, and dynamic property evaluation via `[(expr)]`.
 ///
+/// On top of that, RFC 9535 filter selectors (`[? <expr>]` without wrapping
+/// parentheses) and the standard `match()` / `search()` / `key()` filter
+/// functions are supported, easing migration from RFC 9535 implementations.
+///
 /// ```dart
 /// import 'package:json_path_plus/json_path_plus.dart';
 ///
@@ -42,4 +46,4 @@ library;
 export 'src/json_path.dart';
 export 'src/json_path_match.dart';
 export 'src/json_path_options.dart';
-export 'src/sandboxed_script.dart' show SafeEval;
+export 'src/sandboxed_script.dart' show SafeEval, BuiltInFunction;
