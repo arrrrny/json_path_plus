@@ -467,9 +467,15 @@ class JSONPath {
         return '[#%${subx.length - 1}%]';
       },
     );
-    // Escape dots/tildes in bracket-quoted properties
-    n = n.replaceAllMapped(RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
-        (m) => "['${m[1]!.replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
+    // Escape dots/tildes in bracket-quoted properties. Percent signs are
+    // escaped first so the placeholder sentinels below cannot be confused
+    // with user data: a literal '#%0%' property name must survive the
+    // substitution pass untouched (issue #6). Escaping '%' first also keeps
+    // the '.'/'~' sentinels from being double-escaped.
+    n = n.replaceAllMapped(
+        RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
+        (m) =>
+            "['${m[1]!.replaceAll('%', '%@pct@%').replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
     n = n.replaceAll('~', ';~;');
     n = n.replaceAll(RegExp(r"""['"]?\.['"]?(?![^[]*\])|\[['"]?"""), ';');
     n = n.replaceAll('%@%', '.');
@@ -486,13 +492,26 @@ class JSONPath {
     // Substitute placeholders by splicing them into the token, so a
     // placeholder followed by a tokenization remainder keeps the remainder
     // instead of being replaced wholesale (issue #6).
+    //
+    // The '%' escape is undone on the token's own segments only, never on the
+    // spliced-in filter text: a filter whose expression literally contains
+    // '%@pct@%' must survive verbatim. Every token is restored, including
+    // placeholder-free ones — '$['#%0%']' alone carries no placeholder, so an
+    // early return there would leak the escape sentinel.
     final placeholder = RegExp(r'#%(\d+)%');
+    String restorePct(String segment) => segment.replaceAll('%@pct@%', '%');
     final exprList = parts.map((e) {
-      if (subx.isEmpty || !e.contains('#%')) return e;
-      return e.replaceAllMapped(placeholder, (m) {
+      if (subx.isEmpty || !e.contains('#%')) return restorePct(e);
+      final spliced = StringBuffer();
+      var cursor = 0;
+      for (final m in placeholder.allMatches(e)) {
+        spliced.write(restorePct(e.substring(cursor, m.start)));
         final idx = int.parse(m[1]!);
-        return idx < subx.length ? subx[idx] : m[0]!;
-      });
+        spliced.write(idx < subx.length ? subx[idx] : m[0]!);
+        cursor = m.end;
+      }
+      spliced.write(restorePct(e.substring(cursor)));
+      return spliced.toString();
     }).toList();
     cache[expr] = exprList;
     return List<String>.from(exprList);
