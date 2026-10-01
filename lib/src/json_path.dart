@@ -527,9 +527,13 @@ class JSONPath {
     final ch = n[j];
     if (ch == '?') {
       // `[?(` → paren form; `[?<anything else>` → bare form.
-      return (j + 1 < n.length && n[j + 1] == '(')
-          ? (contentStart: j, isBare: false)
-          : (contentStart: j + 1, isBare: true);
+      if (j + 1 < n.length && n[j + 1] == '(') {
+        return (contentStart: j, isBare: false);
+      }
+      // `[?]` / `[?<EOF>` have no bare content — stay a literal bracket
+      // (the legacy bare-form regex required at least one content char).
+      if (j + 1 >= n.length || n[j + 1] == ']') return null;
+      return (contentStart: j + 1, isBare: true);
     }
     if (ch == '(') return (contentStart: j, isBare: false);
     // Bare form tolerates whitespace after `[` — but `[ ?(x)]` matched
@@ -556,7 +560,13 @@ class JSONPath {
     for (var i = contentStart; i < n.length; i++) {
       final c = n.codeUnitAt(i);
       if (quote != 0) {
-        if (c == quote) quote = 0;
+        if (c == 0x5C) {
+          // \ — the next char is escaped and cannot close the string
+          // (RFC 9535 §2.2.3.2), so skip past it.
+          i++;
+        } else if (c == quote) {
+          quote = 0;
+        }
         continue;
       }
       if (c == 0x27 || c == 0x22) {
@@ -585,8 +595,12 @@ class JSONPath {
     return -1;
   }
 
-  static bool _isSpace(String ch) =>
-      ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r';
+  // Matches the legacy `\s` of the removed bare-form regex: Dart `RegExp` is
+  // ECMAScript-flavored, so this covers form feed / vertical tab and the
+  // Unicode spaces as well as space, tab, LF and CR.
+  static final RegExp _spaceRe = RegExp(r'\s');
+
+  static bool _isSpace(String ch) => _spaceRe.hasMatch(ch);
 
   static String toPathString(List<String> pathArr) {
     if (pathArr.isEmpty) return r'$';

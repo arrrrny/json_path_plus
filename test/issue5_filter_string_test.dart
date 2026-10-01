@@ -41,6 +41,90 @@ void main() {
     });
   });
 
+  group('Escaped quote inside a string literal', () {
+    // RFC 9535 §2.2.3.2: `\"` and `\\` are escapes inside a filter string
+    // literal, so an escaped quote must not close the string — and therefore
+    // must not end the filter token either.
+    final esc = {
+      'p': {'a': 'x")]z', 'b': 1},
+      'q': {'a': 'no', 'b': 2},
+    };
+
+    test(r'$[?(@.a == "x\")]z")].b — escaped quote does not end the token', () {
+      final result = JSONPath.query(r'$[?(@.a == "x\")]z")].b', esc);
+      expect(result, [1]);
+    });
+
+    test(r'$[?@.a == "x\")]z"] — bare form with an escaped quote', () {
+      final result = JSONPath.query(r'$[?@.a == "x\")]z"]', esc);
+      expect(result, [
+        {'a': 'x")]z', 'b': 1}
+      ]);
+    });
+
+    test(r'$[?(@.a == "x\\")].b — escaped backslash before the quote', () {
+      final d = {
+        'p': {'a': 'x\\', 'b': 1},
+        'q': {'a': 'no', 'b': 2},
+      };
+      final result = JSONPath.query(r'$[?(@.a == "x\\")].b', d);
+      expect(result, [1]);
+    });
+  });
+
+  group('Degenerate brackets stay literal', () {
+    test(r'$.items[?] — empty filter is not a bare filter token', () {
+      expect(JSONPath.toPathArray(r'$.items[?]'), [r'$', 'items', '?']);
+    });
+
+    test(r'[? — trailing question mark stays a literal bracket', () {
+      expect(JSONPath.toPathArray(r'$[?'), [r'$', '?']);
+    });
+
+    test(r'[ ?(x)] — whitespace before the paren form stays literal', () {
+      expect(JSONPath.toPathArray(r'$[ ?(x)]'), [r'$', ' ?(x)']);
+    });
+  });
+
+  group(r'Whitespace-tolerant bare filter matches the legacy \s class', () {
+    test('form feed before the bare filter', () {
+      expect(JSONPath.toPathArray(r'$[' '\u{000C}' r'?@.a == 1]'),
+          [r'$', '?(@.a == 1)']);
+    });
+
+    test('vertical tab before the bare filter', () {
+      expect(JSONPath.toPathArray(r'$[' '\u{000B}' r'?@.a == 1]'),
+          [r'$', '?(@.a == 1)']);
+    });
+
+    test('non-breaking space before the bare filter', () {
+      expect(JSONPath.toPathArray(r'$[' '\u{00A0}' r'?@.a == 1]'),
+          [r'$', '?(@.a == 1)']);
+    });
+  });
+
+  group('Malformed input falls back without throwing', () {
+    final data = {
+      'p': {'a': 'x)]y', 'b': 1},
+    };
+
+    test('unterminated quote falls back to a literal bracket', () {
+      expect(JSONPath.query(r'$[?(@.a == "x', data), isEmpty);
+    });
+
+    test('unbalanced bracket falls back to a literal bracket', () {
+      expect(JSONPath.query(r'$[?(@.a[0', data), isEmpty);
+    });
+
+    test('paren form without the `)]` anchor falls back', () {
+      expect(JSONPath.query(r'$[?( @.a == 1 ]', data), isEmpty);
+    });
+
+    test('trailing backslash inside a string falls back', () {
+      expect(JSONPath.query(r'$[?(@.a == "x\', data), isEmpty);
+    });
+  });
+
   group('Issue #5 related: nested brackets in bare filters', () {
     final nested = {
       'items': [
