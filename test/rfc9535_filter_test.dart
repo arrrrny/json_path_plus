@@ -316,4 +316,87 @@ void main() {
       expect(result, ['banana']);
     });
   });
+
+  group('Regex literals /re/flags in filter expressions (issue #7)', () {
+    final items = {
+      'items': [
+        {'name': 'apple'},
+        {'name': 'banana'},
+      ],
+    };
+
+    test(r'$.items[?@.name.match(/^a/)].name — issue #7 repro', () {
+      final result =
+          JSONPath.query(r'$.items[?@.name.match(/^a/)].name', items);
+      expect(result, ['apple']);
+    });
+
+    test(r'$.items[?(@.name.match(/^a/))].name — parenthesized form', () {
+      final result =
+          JSONPath.query(r'$.items[?(@.name.match(/^a/))].name', items);
+      expect(result, ['apple']);
+    });
+
+    test(
+        r'$.items[?@.name.match(/^b/)].name — non-matching literal filters out',
+        () {
+      final result =
+          JSONPath.query(r'$.items[?@.name.match(/^b/)].name', items);
+      expect(result, ['banana']);
+    });
+
+    test(
+        r'$.items[?@.name.match(/an/)].name — unanchored literal finds substring',
+        () {
+      final result =
+          JSONPath.query(r'$.items[?@.name.match(/an/)].name', items);
+      expect(result, ['banana']);
+    });
+
+    test(r'$.items[?@.name.match(/^A/i)].name — flags: case-insensitive', () {
+      final result =
+          JSONPath.query(r'$.items[?@.name.match(/^A/i)].name', items);
+      expect(result, ['apple']);
+    });
+
+    test(r'escaped slash in a regex literal: @.name.match(/^a\/b/)', () {
+      final d = {
+        'items': [
+          {'name': 'a/b'},
+          {'name': 'ab'},
+        ],
+      };
+      final result = JSONPath.query(r'$.items[?@.name.match(/^a\/b/)].name', d);
+      expect(result, ['a/b']);
+    });
+
+    test('match() accepts a regex object: /^a/ keeps its JS prefix meaning',
+        () {
+      // The regex literal is self-contained — no RFC anchoring is applied.
+      // The string form match(@.name, "^a") matches nothing (full match),
+      // but the regex form behaves like JSONPath-Plus.
+      final result =
+          JSONPath.query(r'$.items[?match(@.name, /^a/)].name', items);
+      expect(result, ['apple']);
+    });
+
+    test('search() accepts a regex object: /^ban/ anchors inside the literal',
+        () {
+      final result =
+          JSONPath.query(r'$.items[?search(@.name, /^ban/)].name', items);
+      expect(result, ['banana']);
+    });
+
+    test('match() still rejects non-string values with a regex object', () {
+      final d = {'a': 10, 'b': 'ten'};
+      final result = JSONPath.query(r'$[?match(@, /^10$/)]', d);
+      expect(result, isEmpty); // 10 is a number → LogicalFalse per RFC 9535
+    });
+
+    test('division is not confused with a regex literal', () {
+      // `/` following an operand stays the division operator.
+      expect(SafeEval.evaluate('8 / 2 / 2', {}), equals(2.0));
+      expect(SafeEval.evaluate('(4 + 4) / 2', {}), equals(4.0));
+    });
+  });
 }
