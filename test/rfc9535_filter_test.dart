@@ -399,4 +399,185 @@ void main() {
       expect(SafeEval.evaluate('(4 + 4) / 2', {}), equals(4.0));
     });
   });
+
+  group('Regex literal contract (review findings on #16)', () {
+    test('an invalid literal throws one FormatException naming the literal',
+        () {
+      // A lexically valid literal with an invalid *pattern* is not a JSONPath
+      // syntax error, so it must not crash the whole query from inside the
+      // filter the way an uncaught FormatException would.
+      expect(
+        () => JSONPath.query(r'$.items[?@.name.match(/(/)].name', {
+          'items': [
+            {'name': 'apple'}
+          ]
+        }),
+        throwsA(isA<FormatException>().having((e) => e.message, 'message',
+            allOf(contains('/(/'), contains('Unterminated group')))),
+      );
+    });
+
+    test('an invalid literal is reported even when not inside a filter call',
+        () {
+      expect(
+        () => JSONPath.query(r'$.items[?/(/)].name', {
+          'items': [
+            {'name': 'apple'}
+          ]
+        }),
+        throwsA(isA<FormatException>()
+            .having((e) => e.message, 'message', contains('/(/'))),
+      );
+    });
+
+    test('typeof a regex literal is "object", matching JS', () {
+      expect(SafeEval.evaluate('typeof /a/', {}), equals('object'));
+    });
+
+    test('unknown regex flags are rejected instead of silently dropped', () {
+      // `/a/qq` used to behave exactly like `/a/`, hiding a config typo.
+      expect(
+        () => SafeEval.evaluate('/a/qq', {}),
+        throwsA(isA<FormatException>().having(
+            (e) => e.message, 'message', contains('Unknown regex flag "q"'))),
+      );
+    });
+
+    test('the no-op flags g, y and d are still accepted', () {
+      expect(SafeEval.evaluate('typeof /a/g', {}), equals('object'));
+      expect(SafeEval.evaluate('typeof /a/y', {}), equals('object'));
+      expect(SafeEval.evaluate('typeof /a/d', {}), equals('object'));
+    });
+
+    test('a regex literal is compiled at parse time, not while evaluating', () {
+      // Compilation happens once, when the literal is parsed: a literal in the
+      // never-taken branch of a ternary is still compiled, so it still fails.
+      // If the pattern were compiled lazily during evaluation this would
+      // return 2 — which is exactly the bug (a compile per evaluation, in a
+      // filter hot loop over N candidates).
+      expect(
+        () => SafeEval.evaluate('/(/ ? 1 : 2', {}),
+        throwsA(isA<FormatException>()),
+      );
+      expect(SafeEval.evaluate('/^a/ ? 1 : 2', {}), equals(1));
+    });
+
+    group(r'@ inside a literal is not rewritten to _$_v', () {
+      final data = {
+        'items': [
+          {'name': 'a@'},
+          {'name': 'a@b'},
+          {'name': 'plain'},
+        ]
+      };
+
+      test(r'/^a@$/ matches "a@" — the literal keeps its own @', () {
+        // Fully anchored so the assertion is about the `@` surviving the
+        // rewrite, not about regex-literal substring semantics.
+        final result =
+            JSONPath.query(r'$.items[?@.name.match(/^a@$/)].name', data);
+        expect(result, ['a@']);
+      });
+
+      test(r'an email-style pattern /2 matches "a@b"', () {
+        final result = JSONPath.query(
+            r'$.items[?@.name.match(/^[^@]+@[^@]*$/)].name', data);
+        expect(result, ['a@', 'a@b']);
+      });
+
+      test(r'a negated class /[^@]+/ still excludes @', () {
+        final result =
+            JSONPath.query(r'$.items[?@.name.match(/^[^@]+$/)].name', data);
+        expect(result, ['plain']);
+      });
+
+      test(r'a @ inside a string pattern is preserved too', () {
+        // Pre-existing bug, same root cause: the lone-@ rewrite ran over the
+        // raw text and hit string literals as well.
+        final result =
+            JSONPath.query(r'$.items[?match(@.name, "^a@")].name', data);
+        expect(result, ['a@']);
+      });
+
+      test('the @ magic variables outside literals still work', () {
+        expect(
+            JSONPath.query(r'$.items[?(@.name !== "zzz")].name', data).length,
+            3);
+        expect(JSONPath.query(r'$.items[?@.name === "a@"].name', data), ['a@']);
+      });
+    });
+
+    group('filter extraction is regex-literal aware', () {
+      final data = {
+        'items': [
+          {'name': 'x]'},
+          {'name': 'plain'},
+        ]
+      };
+
+      test(r'a char class holding ] survives extraction — [? ... ] form', () {
+        final result =
+            JSONPath.query(r'$.items[?@.name.match(/^[x\]]+$/)].name', data);
+        expect(result, ['x]']);
+      });
+
+      test(r'a char class holding ] survives extraction — [?(...)] form', () {
+        final result =
+            JSONPath.query(r'$.items[?(@.name.match(/^[x\]]+$/))].name', data);
+        expect(result, ['x]']);
+      });
+
+      test(r'an escaped ] also survives extraction', () {
+        final d = {
+          'items': [
+            {'name': 'a]b'},
+            {'name': 'plain'},
+          ]
+        };
+        final result =
+            JSONPath.query(r'$.items[?@.name.match(/^a\]b$/)].name', d);
+        expect(result, ['a]b']);
+      });
+
+      test(r'a ] inside a string pattern does not truncate extraction', () {
+        final d = {
+          'items': [
+            {'name': 'x]y'},
+            {'name': 'zz'},
+          ]
+        };
+        final result =
+            JSONPath.query(r'$.items[?match(@.name, "x]y")].name', d);
+        expect(result, ['x]y']);
+      });
+
+      test('a filter whose literal holds ) does not truncate extraction', () {
+        final d = {
+          'items': [
+            {'name': 'a)b'},
+            {'name': 'plain'},
+          ]
+        };
+        final result =
+            JSONPath.query(r'$.items[?(@.name.match(/^a\)[b]$/))].name', d);
+        expect(result, ['a)b']);
+      });
+
+      test('division inside a filter is still division', () {
+        final d = {
+          'items': [
+            {'n': 4, 'name': 'four'},
+            {'n': 1, 'name': 'one'},
+          ]
+        };
+        expect(JSONPath.query(r'$.items[?(@.n / 2 > 1)].name', d), ['four']);
+      });
+
+      test('plain index and bracket-property paths are untouched', () {
+        expect(JSONPath.toPathArray(r'$.a[0].b'), [r'$', 'a', '0', 'b']);
+        expect(JSONPath.toPathArray(r"$.a['b.c'].d"), [r'$', 'a', 'b.c', 'd']);
+        expect(JSONPath.toPathArray(r'$.a[0:2].b'), [r'$', 'a', '0:2', 'b']);
+      });
+    });
+  });
 }

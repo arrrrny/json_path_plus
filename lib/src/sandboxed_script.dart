@@ -89,7 +89,14 @@ class TypeofExpr extends Expr {
 class RegexExpr extends Expr {
   final String pattern;
   final String flags;
-  RegexExpr(this.pattern, this.flags);
+
+  /// The compiled pattern. Built once, when the literal is parsed, so a filter
+  /// evaluated over N candidates compiles it once rather than N times — and so
+  /// an invalid pattern fails at parse time with one located error instead of
+  /// crashing the query mid-filter.
+  final RegExp compiled;
+
+  RegexExpr(this.pattern, this.flags, this.compiled);
 }
 
 // ── Tokenizer ──
@@ -106,7 +113,27 @@ class Tokenizer {
   final String input;
   int pos = 0;
 
+  /// The source spans of the string and regex literals read so far, in the
+  /// order they appear. Callers that rewrite raw source text (the `@` magic
+  /// variables in a JSONPath filter) use this to leave literal contents
+  /// untouched.
+  final List<({int start, int end})> literals = [];
+
   Tokenizer(this.input);
+
+  /// The literal spans of [input], or null when [input] does not tokenize
+  /// (an unterminated regex literal, say). With no known boundaries there is
+  /// nothing to protect, so callers fall back to rewriting the whole text and
+  /// let the evaluator report the syntax error.
+  static List<({int start, int end})>? literalSpansOf(String input) {
+    final tokenizer = Tokenizer(input);
+    try {
+      tokenizer.tokenize();
+    } on FormatException {
+      return null;
+    }
+    return tokenizer.literals;
+  }
 
   List<Token> tokenize() {
     final tokens = <Token>[];
@@ -170,6 +197,7 @@ class Tokenizer {
   }
 
   Token _readRegex() {
+    final start = pos;
     pos++; // skip opening '/'
     final buffer = StringBuffer();
     var inCharClass = false;
@@ -190,6 +218,7 @@ class Tokenizer {
         while (pos < input.length && _isIdentPart(input[pos])) {
           pos++;
         }
+        literals.add((start: start, end: pos));
         return Token(
             'regex', buffer.toString(), input.substring(flagStart, pos));
       }
@@ -216,6 +245,7 @@ class Tokenizer {
   }
 
   Token _readString() {
+    final start = pos;
     final quote = input[pos];
     pos++; // skip opening quote
     final buffer = StringBuffer();
@@ -245,6 +275,7 @@ class Tokenizer {
       pos++;
     }
     pos++; // skip closing quote
+    literals.add((start: start, end: pos));
     return Token('str', buffer.toString());
   }
 
@@ -517,7 +548,19 @@ class Parser {
     }
     if (tok.type == 'regex') {
       _advance();
-      return RegexExpr(tok.value, tok.flags);
+      // Compile eagerly: a lexically valid literal whose pattern is invalid
+      // (`/(/)`) is not a JSONPath syntax error, so it must not be left to
+      // blow up mid-filter where it takes the whole query down with it —
+      // unlike an invalid *string* pattern, which RFC 9535 turns into
+      // LogicalFalse. One deterministic, well-located error instead.
+      final RegExp compiled;
+      try {
+        compiled = SafeEval._compileRegex(tok.value, tok.flags);
+      } on FormatException catch (e) {
+        throw FormatException(
+            'Invalid regex literal /${tok.value}/${tok.flags}: ${e.message}');
+      }
+      return RegexExpr(tok.value, tok.flags, compiled);
     }
     if (tok.type == 'id') {
       _advance();
@@ -672,14 +715,23 @@ class SafeEval {
         final val = _evalAst(ast.operand, subs);
         return _typeofVal(val);
       case RegexExpr():
-        return _compileRegex(ast.pattern, ast.flags);
+        return ast.compiled;
     }
   }
 
+  /// The JS regex flags this engine accepts: `i`, `m`, `s`, `u` map to Dart
+  /// [RegExp] options; `g`, `y`, and `d` are accepted as no-ops. Anything else
+  /// is a typo in a JSONPath-Plus config and is rejected rather than silently
+  /// dropped, matching JS.
+  static const String _knownRegexFlags = 'gimsuyd';
+
   /// Compile a regex literal (`/pattern/flags`) into a Dart [RegExp].
-  /// The JS flags this engine honors are mapped (i, m, s, u); `g`, `y`, and
-  /// `d` are accepted but have no equivalent here.
   static RegExp _compileRegex(String pattern, String flags) {
+    for (final flag in flags.split('')) {
+      if (!_knownRegexFlags.contains(flag)) {
+        throw FormatException('Unknown regex flag "$flag" in /$pattern/$flags');
+      }
+    }
     return RegExp(
       pattern,
       multiLine: flags.contains('m'),
@@ -909,6 +961,7 @@ class SafeEval {
     if (val is String) return 'string';
     if (val is List) return 'array';
     if (val is Map) return 'object';
+    if (val is RegExp) return 'object'; // JS: a regex literal is an object
     if (val is Function) return 'function';
     return 'undefined';
   }
