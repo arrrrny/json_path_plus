@@ -62,6 +62,8 @@ class JSONPath {
         };
     _hasParentSelector = false;
     _ignoreEvalErrors = opts.ignoreEvalErrors;
+    // @root (JSONPath-Plus semantics) refers to the original document root.
+    _sandbox[r'_$_root'] = opts.json;
 
     Object? expr = opts.path;
     final json = opts.json;
