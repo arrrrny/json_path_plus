@@ -104,5 +104,20 @@ void main() {
       expect(JSONPath.toPathArray(r'$.a.b'), equals([r'$', 'a', 'b']));
       expect(JSONPath.cacheSize, 1);
     });
+
+    test('evaluate mutating its compiled path does not poison the cache', () {
+      JSONPath.query(r'$.store.book[*].title', {
+        'store': {
+          'book': [
+            {'title': 'Sayings of the Century'}
+          ]
+        }
+      });
+      expect(JSONPath.isCached(r'$.store.book[*].title'), isTrue);
+      expect(
+        JSONPath.toPathArray(r'$.store.book[*].title'),
+        equals([r'$', 'store', 'book', '*', 'title']),
+      );
+    });
   });
 }

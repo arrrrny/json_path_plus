@@ -1,3 +1,10 @@
+## 2.0.0
+
+- **BREAKING** — `JSONPath.cache` (public mutable `Map<String, dynamic>`) removed.
+  The compiled-path cache is now private (`_pathCache`), LRU-bounded at
+  `JSONPath.cacheCapacity` (512). Inspect/clear via `JSONPath.cacheSize`,
+  `isCached()`, `clearCache()`.
+
 ## 1.2.0
 
 - **RFC 9535 filter selectors** — bare filter expressions `[?@.price > 10]` now work without wrapping parentheses (`[?(...)]` still supported). Standard filter syntax no longer needs workarounds when migrating from `json_path`.

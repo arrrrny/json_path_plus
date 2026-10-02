@@ -463,6 +463,9 @@ class JSONPath {
 
   /// Returns the cached path array for [expr] and promotes it to
   /// most-recently-used, or `null` when nothing is cached for it.
+  ///
+  /// The returned list is the live internal entry — callers must not mutate
+  /// it; copy it (e.g. `List<String>.from(...)`) before handing it out.
   static List<String>? _cacheLookup(String expr) {
     final cached = _pathCache.remove(expr);
     if (cached == null) return null;
