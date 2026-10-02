@@ -268,6 +268,35 @@ void main() {
       );
     });
 
+    test('Incomparable types never match <, >, <=, >= (issue #4)', () {
+      final data = {
+        'items': [
+          {'name': 'abc'},
+          {'name': 'zzz'},
+        ],
+      };
+      expect(
+        JSONPath.query(r'$.items[?(@.name <= 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name >= 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name < 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name > 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(5 <= @.name)].name', data),
+        equals([]),
+      );
+    });
+
     test('Boolean operators: && and ||', () {
       final data = {
         'items': [
@@ -870,6 +899,54 @@ void main() {
       expect(SafeEval.evaluate('1 >= 2', {}), equals(false));
     });
 
+    test('incomparable types: <, >, <=, >= yield false (issue #4)', () {
+      // string vs number, both operand orders (JS: NaN → false;
+      // RFC 9535: typed comparison → false)
+      expect(SafeEval.evaluate("'abc' < 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' > 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' <= 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' >= 5", {}), equals(false));
+      expect(SafeEval.evaluate("5 < 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 > 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 <= 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 >= 'abc'", {}), equals(false));
+      // null and composite operands are also incomparable with numbers
+      expect(SafeEval.evaluate('null < 5', {}), equals(false));
+      expect(SafeEval.evaluate('null >= 5', {}), equals(false));
+      expect(
+          SafeEval.evaluate('a < 5', {
+            'a': [1, 2]
+          }),
+          equals(false));
+      expect(
+          SafeEval.evaluate('a <= 5', {
+            'a': {'x': 1}
+          }),
+          equals(false));
+      // booleans have no JSON ordering: every ordered comparison is false,
+      // even though JS would coerce them numerically via Number()
+      expect(SafeEval.evaluate('true >= false', {}), equals(false));
+      expect(SafeEval.evaluate('true < false', {}), equals(false));
+      expect(SafeEval.evaluate('false > true', {}), equals(false));
+      expect(SafeEval.evaluate('true <= false', {}), equals(false));
+      // NaN is incomparable (JS: any ordered comparison against NaN is false;
+      // Dart's num.compareTo would total-order it above every other value)
+      expect(SafeEval.evaluate('0/0 > 5', {}), equals(false));
+      expect(SafeEval.evaluate('0/0 < 5', {}), equals(false));
+      expect(SafeEval.evaluate('5 >= 0/0', {}), equals(false));
+      expect(SafeEval.evaluate('a / b > 5', {'a': 0, 'b': 0}), equals(false));
+      // infinite operands are still ordered normally
+      expect(SafeEval.evaluate('a / b > 5', {'a': 10, 'b': 0}), equals(true));
+      // same-type comparisons still work
+      expect(SafeEval.evaluate("'a' < 'b'", {}), equals(true));
+      expect(SafeEval.evaluate("'b' >= 'a'", {}), equals(true));
+      expect(SafeEval.evaluate('2 <= 2', {}), equals(true));
+      // ==/=== semantics unchanged
+      expect(SafeEval.evaluate("'abc' == 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' === 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' != 5", {}), equals(true));
+    });
+
     test('boolean logic', () {
       expect(SafeEval.evaluate('true && false', {}), equals(false));
       expect(SafeEval.evaluate('true || false', {}), equals(true));
@@ -973,21 +1050,21 @@ void main() {
 
   group('M. Caching', () {
     test('toPathArray caches results', () {
-      JSONPath.cache.clear();
+      JSONPath.clearCache();
       final expr = r'$.store.book[0].title';
       final result1 = JSONPath.toPathArray(expr);
       final result2 = JSONPath.toPathArray(expr);
       expect(result1, equals(result2));
-      expect(JSONPath.cache.containsKey(expr), isTrue);
+      expect(JSONPath.isCached(expr), isTrue);
     });
 
     test('cache can be cleared', () {
-      JSONPath.cache.clear();
+      JSONPath.clearCache();
       final expr = r'$.a.b';
       JSONPath.toPathArray(expr);
-      expect(JSONPath.cache.containsKey(expr), isTrue);
-      JSONPath.cache.remove(expr);
-      expect(JSONPath.cache.containsKey(expr), isFalse);
+      expect(JSONPath.isCached(expr), isTrue);
+      JSONPath.clearCache();
+      expect(JSONPath.isCached(expr), isFalse);
     });
   });
 
