@@ -243,10 +243,14 @@ final result = SafeEval.evaluate('1 + 2 * 3 > 5 && "hello" + " world"');
 ## Security notes
 
 - **Resource limits** — `SafeEval` refuses expressions longer than 64 KiB
-  (`SafeEval.maxExpressionLength`) or nested deeper than 256 levels
-  (`SafeEval.maxNestingDepth`); both throw `FormatException`
+  (`SafeEval.maxExpressionLength`) or nested deeper than 256 descent
+  frames (`SafeEval.maxNestingDepth`); both throw `FormatException`
   (`expression too long` / `expression too deeply nested`) instead of
-  crashing with a `StackOverflowError`. If your filter or dynamic
+  crashing with a `StackOverflowError`. Depth is counted in recursive-descent
+  frames and chain links, not uniform nesting levels — each parenthesis
+  level costs two frames (parenthesized nesting caps at ~127 levels), and
+  every member/index/call chain link or binary operator counts one, so
+  evaluation recursion stays bounded too. If your filter or dynamic
   expressions ever embed untrusted input, treat `FormatException` as
   "reject this query" — an uncaught `Error` is not a recoverable outcome.
 - **ReDoS caveat for interpolated regex patterns** — `match()`, `search()`,

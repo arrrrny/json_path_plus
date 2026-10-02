@@ -31,6 +31,14 @@ void main() {
     test('long-but-legal expression just under the limit still evaluates', () {
       expect(SafeEval.evaluate(hugeLiteral(60000), {}), 60000);
     });
+
+    test('expression of exactly maxExpressionLength chars still evaluates', () {
+      // hugeLiteral(n) contributes n + 9 chars of code ('...' plus .length).
+      expect(
+        SafeEval.evaluate(hugeLiteral(SafeEval.maxExpressionLength - 9), {}),
+        SafeEval.maxExpressionLength - 9,
+      );
+    });
   });
 
   group('SafeEval nesting depth limit', () {
@@ -57,6 +65,75 @@ void main() {
       // the depth cap must cover that path too.
       expect(
         () => SafeEval.evaluate('${'!' * 1000}true', {}),
+        throwsA(
+          isA<FormatException>().having(
+              (e) => e.message, 'message', 'expression too deeply nested'),
+        ),
+      );
+    });
+
+    test('127 nested parens (the parse-depth boundary) still evaluate', () {
+      // Depth is counted in descent frames: each paren level costs two
+      // (ternary + unary), so 127 levels reach exactly 256 frames.
+      expect(SafeEval.evaluate(nestedParens(127), {}), 129);
+    });
+
+    test('128 nested parens exceed the parse-depth cap', () {
+      expect(
+        () => SafeEval.evaluate(nestedParens(128), {}),
+        throwsA(
+          isA<FormatException>().having(
+              (e) => e.message, 'message', 'expression too deeply nested'),
+        ),
+      );
+    });
+  });
+
+  group('SafeEval chain depth limit (evaluation-time recursion)', () {
+    test('deep member chain throws FormatException, not StackOverflowError',
+        () {
+      // a.b.b… × 20000 parses iteratively at descent depth ≈ 0 but recurses
+      // in _evalMember; chain links must count toward the same cap.
+      expect(
+        () => SafeEval.evaluate('a${'.b' * 20000}', {}),
+        throwsA(
+          isA<FormatException>().having(
+              (e) => e.message, 'message', 'expression too deeply nested'),
+        ),
+      );
+    });
+
+    test('deep binary chain throws FormatException, not StackOverflowError',
+        () {
+      // 1+1+… × 30000 builds a left-deep AST that recurses in _evalBinary.
+      expect(
+        () => SafeEval.evaluate('${'1+' * 30000}1', {}),
+        throwsA(
+          isA<FormatException>().having(
+              (e) => e.message, 'message', 'expression too deeply nested'),
+        ),
+      );
+    });
+
+    test('deep index chain throws FormatException, not StackOverflowError', () {
+      // a[0][0]… × 15000 recurses in _evalIndex at evaluation time.
+      expect(
+        () => SafeEval.evaluate('a${'[0]' * 15000}', {}),
+        throwsA(
+          isA<FormatException>().having(
+              (e) => e.message, 'message', 'expression too deeply nested'),
+        ),
+      );
+    });
+
+    test('binary chain at the depth boundary still evaluates', () {
+      // 256 absorbed '+' operators: exactly at the 256-link cap.
+      expect(SafeEval.evaluate('${'1+' * 256}1', {}), 257);
+    });
+
+    test('binary chain past the depth cap throws FormatException', () {
+      expect(
+        () => SafeEval.evaluate('${'1+' * 257}1', {}),
         throwsA(
           isA<FormatException>().having(
               (e) => e.message, 'message', 'expression too deeply nested'),

@@ -202,8 +202,8 @@ class Tokenizer {
 
   Token _readOperator() {
     final start = pos;
-    // Try to match longest operator first
-    final remaining = input.substring(pos);
+    // Try to match longest operator first (substring-free: startsWith at
+    // the cursor avoids copying the remaining input on every token).
     final ops = [
       '===',
       '!==',
@@ -234,7 +234,7 @@ class Tokenizer {
       ':',
     ];
     for (final op in ops) {
-      if (remaining.startsWith(op)) {
+      if (input.startsWith(op, pos)) {
         pos += op.length;
         return Token('op', op);
       }
@@ -291,24 +291,33 @@ class Parser {
 
   Expr _parseOr() {
     var left = _parseAnd();
+    var chain = 0;
     while (_matchOp('||')) {
       final right = _parseAnd();
       left = BinaryExpr(left, '||', right);
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseAnd() {
     var left = _parseEquality();
+    var chain = 0;
     while (_matchOp('&&')) {
       final right = _parseEquality();
       left = BinaryExpr(left, '&&', right);
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseEquality() {
     var left = _parseComparison();
+    var chain = 0;
     while (true) {
       if (_matchOp('===')) {
         left = BinaryExpr(left, '===', _parseComparison());
@@ -321,12 +330,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseComparison() {
     var left = _parseAddSub();
+    var chain = 0;
     while (true) {
       if (_matchOp('<')) {
         left = BinaryExpr(left, '<', _parseAddSub());
@@ -339,12 +352,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseAddSub() {
     var left = _parseMulDiv();
+    var chain = 0;
     while (true) {
       if (_matchOp('+')) {
         left = BinaryExpr(left, '+', _parseMulDiv());
@@ -353,12 +370,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseMulDiv() {
     var left = _parseUnary();
+    var chain = 0;
     while (true) {
       if (_matchOp('*')) {
         left = BinaryExpr(left, '*', _parseUnary());
@@ -368,6 +389,9 @@ class Parser {
         left = BinaryExpr(left, '%', _parseUnary());
       } else {
         break;
+      }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
       }
     }
     return left;
@@ -411,6 +435,12 @@ class Parser {
   /// Track recursive-descent depth; refuse expressions nested deeper than
   /// [SafeEval.maxNestingDepth]. Past that limit the parser recursion itself
   /// risks a StackOverflowError, which must surface as a [FormatException].
+  /// The count is in descent frames, not nesting levels — a parenthesis
+  /// level costs two frames (both [_parseTernary] and [_parseUnary] enter
+  /// once per level), so parenthesized nesting caps at ~127 levels. Chain
+  /// links and binary operators, which parse iteratively but still recurse
+  /// at evaluation time, are bounded by their own link counters toward the
+  /// same cap.
   void _enter() {
     if (++_depth > SafeEval.maxNestingDepth) {
       throw const FormatException('expression too deeply nested');
@@ -419,7 +449,13 @@ class Parser {
 
   Expr _parsePostfix() {
     var expr = _parsePrimary();
+    var chain = 0;
     while (true) {
+      // Chain links build a left-deep AST that recurses at evaluation time,
+      // so each link counts toward the same nesting cap.
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
       if (_matchPunc('.')) {
         // Member access: obj.key
         final prop = _expectIdentifier();
@@ -546,7 +582,13 @@ class SafeEval {
 
   /// Maximum accepted expression nesting depth. Deeper expressions throw
   /// [FormatException] instead of overflowing the stack during recursive
-  /// descent parsing.
+  /// descent parsing or evaluation.
+  ///
+  /// Depth is counted in recursive-descent frames and chain links, not
+  /// uniform nesting levels: each parenthesis level costs two frames
+  /// (parenthesized nesting therefore caps at ~127 levels), each unary
+  /// operator one frame, and every member/index/call chain link or binary
+  /// operator one link.
   static const int maxNestingDepth = 256;
 
   /// Parse and evaluate a JS-style expression string with the given
