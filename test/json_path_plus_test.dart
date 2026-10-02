@@ -1087,6 +1087,29 @@ void main() {
       }
     });
 
+    test(
+        'keys containing placeholder markers are a documented round-trip boundary',
+        () {
+      // _restoreEscapedChars resolves %@@…@@% markers wherever they appear, so
+      // a key that genuinely contains one is silently rewritten on round-trip
+      // (% itself has no placeholder). Pinned until % gets its own marker.
+      const cases = {
+        'a%@@SQ@@%b': "a'b",
+        'a%@@RB@@%b': 'a]b',
+      };
+      cases.forEach((key, corrupted) {
+        final pathStr = JSONPath.toPathString([r'$', key]);
+        expect(pathStr, equals("\$['$key']"),
+            reason: 'toPathString must not rewrite a literal marker key');
+        expect(
+          JSONPath.toPathArray(pathStr),
+          equals([r'$', corrupted]),
+          reason:
+              'marker-collision boundary: key "$key" round-trips as "$corrupted"',
+        );
+      });
+    });
+
     test('query round-trips paths for special keys', () {
       const keys = [
         "a'b",

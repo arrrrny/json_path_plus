@@ -470,7 +470,7 @@ class JSONPath {
     // literal ] so the tokenization below cannot split quoted keys apart.
     // Escape pairs (backslash + any character) are consumed as units so an
     // escaped quote no longer terminates the key.
-    n = n.replaceAllMapped(RegExp(r"""\[['"]((?:\\.|[^'"])*?)['"]\]"""), (m) {
+    n = n.replaceAllMapped(RegExp(r"""\[['"]((?:\\.|[^\\'"])*?)['"]\]"""), (m) {
       return "['${_protectQuotedKey(m[1]!)}']";
     });
     n = n.replaceAll('~', ';~;');
