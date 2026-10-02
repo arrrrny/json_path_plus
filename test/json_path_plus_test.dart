@@ -1050,21 +1050,21 @@ void main() {
 
   group('M. Caching', () {
     test('toPathArray caches results', () {
-      JSONPath.cache.clear();
+      JSONPath.clearCache();
       final expr = r'$.store.book[0].title';
       final result1 = JSONPath.toPathArray(expr);
       final result2 = JSONPath.toPathArray(expr);
       expect(result1, equals(result2));
-      expect(JSONPath.cache.containsKey(expr), isTrue);
+      expect(JSONPath.isCached(expr), isTrue);
     });
 
     test('cache can be cleared', () {
-      JSONPath.cache.clear();
+      JSONPath.clearCache();
       final expr = r'$.a.b';
       JSONPath.toPathArray(expr);
-      expect(JSONPath.cache.containsKey(expr), isTrue);
-      JSONPath.cache.remove(expr);
-      expect(JSONPath.cache.containsKey(expr), isFalse);
+      expect(JSONPath.isCached(expr), isTrue);
+      JSONPath.clearCache();
+      expect(JSONPath.isCached(expr), isFalse);
     });
   });
 

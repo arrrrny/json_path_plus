@@ -1,3 +1,10 @@
+## 2.0.0
+
+- **BREAKING** — `JSONPath.cache` (public mutable `Map<String, dynamic>`) removed.
+  The compiled-path cache is now private (`_pathCache`), LRU-bounded at
+  `JSONPath.cacheCapacity` (512). Inspect/clear via `JSONPath.cacheSize`,
+  `isCached()`, `clearCache()`.
+
 ## 1.2.0
 
 - **Fixed: ordered comparisons never match incomparable types** — `<`, `>`, `<=`, `>=` used to degrade to `0 <op> 0` when the two operands were not comparable, so `$.items[?(@.name <= 5)]` wrongly selected string-valued `name` nodes (`0 <= 0` is `true`). Mixed-type operands now yield `false`, matching JS (`'abc' <= 5` is `false` via NaN comparison) and RFC 9535 typed comparison. This also covers booleans (JSON defines no ordering for them, so `true >= false` is now `false`) and `NaN` from filter arithmetic (`0/0 > 5`), which previously compared as greater than everything. `==`/`===`/`!=`/`!==` semantics are unchanged.
