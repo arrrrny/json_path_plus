@@ -465,9 +465,14 @@ class JSONPath {
         return '[#${subx.length - 1}]';
       },
     );
-    // Escape dots/tildes in bracket-quoted properties
-    n = n.replaceAllMapped(RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
-        (m) => "['${m[1]!.replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
+    // Escape dots/tildes in bracket-quoted properties, and neutralize the
+    // escape sequences toPathString produces (\\, \', \n, \r, \t) plus any
+    // literal ] so the tokenization below cannot split quoted keys apart.
+    // Escape pairs (backslash + any character) are consumed as units so an
+    // escaped quote no longer terminates the key.
+    n = n.replaceAllMapped(RegExp(r"""\[['"]((?:\\.|[^'"])*?)['"]\]"""), (m) {
+      return "['${_protectQuotedKey(m[1]!)}']";
+    });
     n = n.replaceAll('~', ';~;');
     n = n.replaceAll(RegExp(r"""['"]?\.['"]?(?![^[]*\])|\[['"]?"""), ';');
     n = n.replaceAll('%@%', '.');
@@ -479,6 +484,9 @@ class JSONPath {
     n = n.replaceAll(RegExp(r';;;|;;'), ';..;');
     // Remove trailing semicolons and quotes (matching JS: /;$|'?\]|'$/u)
     n = n.replaceAll(RegExp(r''';$|'?]|'$'''), '');
+    // Resolve the protected escape sequences back into the key's real
+    // characters, once the tokenizer can no longer misread them.
+    n = _restoreEscapedChars(n);
 
     final parts = n.split(';');
     final exprList = parts.map((e) {
@@ -500,10 +508,73 @@ class JSONPath {
       if (!RegExp(r'^(~|\^|@.*?\(\))$').hasMatch(pathArr[i])) {
         p += RegExp(r'^[0-9*]+$').hasMatch(pathArr[i])
             ? '[${pathArr[i]}]'
-            : "['${pathArr[i]}']";
+            : "['${_escapeQuotedSegment(pathArr[i])}']";
       }
     }
     return p;
+  }
+
+  // Placeholders used while tokenizing quoted keys (same scheme as the
+  // '%@%' dot and '%%@@%%' tilde markers): inert to every split/trim step
+  // and free of the characters they stand in for.
+  static const String _escBackslash = '%@@BS@@%';
+  static const String _escSingleQuote = '%@@SQ@@%';
+  static const String _escNewline = '%@@LF@@%';
+  static const String _escCarriageReturn = '%@@CR@@%';
+  static const String _escTab = '%@@TAB@@%';
+  static const String _escRightBracket = '%@@RB@@%';
+
+  /// Escapes the characters that would otherwise terminate or corrupt the
+  /// single-quoted bracket segments [toPathString] emits. [toPathArray]
+  /// resolves these sequences back into the key's literal characters.
+  static String _escapeQuotedSegment(String s) {
+    return s
+        .replaceAll(r'\', r'\\')
+        .replaceAll("'", r"\'")
+        .replaceAll('\n', r'\n')
+        .replaceAll('\r', r'\r')
+        .replaceAll('\t', r'\t');
+  }
+
+  /// Rewrites the raw content of a bracket-quoted key so the tokenizer
+  /// cannot misread it: the escape sequences produced by
+  /// [_escapeQuotedSegment] are swapped for placeholders (resolved later by
+  /// [_restoreEscapedChars]), and `.`, `~` and `]` are hidden from the
+  /// dot/tilde/bracket tokenization exactly like the pre-existing '%@%' and
+  /// '%%@@%%' markers do.
+  static String _protectQuotedKey(String raw) {
+    final protected = raw.replaceAllMapped(RegExp(r'\\(.)'), (m) {
+      switch (m[1]) {
+        case r'\':
+          return _escBackslash;
+        case "'":
+          return _escSingleQuote;
+        case 'n':
+          return _escNewline;
+        case 'r':
+          return _escCarriageReturn;
+        case 't':
+          return _escTab;
+        default:
+          return _escBackslash + m[1]!; // keep other escapes verbatim
+      }
+    });
+    return protected
+        .replaceAll('.', '%@%')
+        .replaceAll('~', '%%@@%%')
+        .replaceAll(']', _escRightBracket);
+  }
+
+  /// Resolves the placeholders produced by [_protectQuotedKey] back into the
+  /// key's literal characters.
+  static String _restoreEscapedChars(String s) {
+    return s
+        .replaceAll(_escRightBracket, ']')
+        .replaceAll(_escSingleQuote, "'")
+        .replaceAll(_escNewline, '\n')
+        .replaceAll(_escCarriageReturn, '\r')
+        .replaceAll(_escTab, '\t')
+        .replaceAll(_escBackslash, r'\');
   }
 
   static String toPointer(List<String> path) {

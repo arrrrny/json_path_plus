@@ -1023,6 +1023,94 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════
+  // Quoted-key escaping (toPathString / toPathArray)
+  // ═══════════════════════════════════════════════════════════════════
+
+  group('Quoted-key escaping', () {
+    test("toPathString escapes single quotes", () {
+      expect(JSONPath.toPathString([r'$', "a'b"]), equals(r"$['a\'b']"));
+    });
+
+    test('toPathString escapes backslashes', () {
+      expect(JSONPath.toPathString([r'$', r'a\b']), equals(r"$['a\\b']"));
+    });
+
+    test('toPathString escapes control characters', () {
+      expect(JSONPath.toPathString([r'$', 'a\nb']), equals(r"$['a\nb']"));
+      expect(JSONPath.toPathString([r'$', 'a\rb']), equals(r"$['a\rb']"));
+      expect(JSONPath.toPathString([r'$', 'a\tb']), equals(r"$['a\tb']"));
+    });
+
+    test('toPathString leaves harmless characters alone', () {
+      expect(JSONPath.toPathString([r'$', 'a"b']), equals("\$['a\"b']"));
+      expect(JSONPath.toPathString([r'$', 'a.b']), equals(r"$['a.b']"));
+      expect(JSONPath.toPathString([r'$', 'a~b']), equals(r"$['a~b']"));
+      expect(JSONPath.toPathString([r'$', 'a]b']), equals(r"$['a]b']"));
+    });
+
+    test('toPathArray unescapes quoted keys', () {
+      expect(JSONPath.toPathArray(r"$['a\'b']"), equals([r'$', "a'b"]));
+      expect(JSONPath.toPathArray(r"$['a\\b']"), equals([r'$', r'a\b']));
+      expect(JSONPath.toPathArray(r"$['a\nb']"), equals([r'$', 'a\nb']));
+      expect(JSONPath.toPathArray(r"$['a\rb']"), equals([r'$', 'a\rb']));
+      expect(JSONPath.toPathArray(r"$['a\tb']"), equals([r'$', 'a\tb']));
+    });
+
+    test('toPathArray still parses dot, tilde and bracket-quoted keys', () {
+      expect(JSONPath.toPathArray(r"$['a.b']"), equals([r'$', 'a.b']));
+      expect(JSONPath.toPathArray(r"$['a~b']"), equals([r'$', 'a~b']));
+      expect(JSONPath.toPathArray(r"$['a]b']"), equals([r'$', 'a]b']));
+      expect(JSONPath.toPathArray(r'$["a"]'), equals([r'$', 'a']));
+    });
+
+    test('toPathString → toPathArray round-trips special keys', () {
+      const keys = [
+        "a'b",
+        'a"b',
+        r'a\b',
+        'a.b',
+        'a~b',
+        'a]b',
+        "a']b",
+        r'a\.b',
+        "a'b]c.d~e\\f",
+        'a\nb',
+        'a\tb',
+      ];
+      for (final key in keys) {
+        final pathStr = JSONPath.toPathString([r'$', key]);
+        expect(
+          JSONPath.toPathArray(pathStr),
+          equals([r'$', key]),
+          reason: 'round-trip failed for key "$key" (path: $pathStr)',
+        );
+      }
+    });
+
+    test('query round-trips paths for special keys', () {
+      const keys = [
+        "a'b",
+        'a"b',
+        r'a\b',
+        'a.b',
+        'a~b',
+        'a]b',
+        "a']b",
+        r'a\.b',
+        "a'b]c.d~e\\f",
+      ];
+      for (final key in keys) {
+        final pathStr = JSONPath.toPathString([r'$', key]);
+        expect(
+          JSONPath.query(pathStr, {key: 'found'}),
+          equals(['found']),
+          reason: 'query failed for key "$key" (path: $pathStr)',
+        );
+      }
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
   // Edge cases
   // ═══════════════════════════════════════════════════════════════════
 
