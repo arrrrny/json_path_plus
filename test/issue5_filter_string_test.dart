@@ -81,8 +81,11 @@ void main() {
       expect(JSONPath.toPathArray(r'$[?'), [r'$', '?']);
     });
 
-    test(r'[ ?(x)] — whitespace before the paren form stays literal', () {
-      expect(JSONPath.toPathArray(r'$[ ?(x)]'), [r'$', ' ?(x)']);
+    test(r'[ ?(x)] — whitespace before the paren form is still a filter', () {
+      // Deliberate change in the #7 merge: filter recognition is
+      // whitespace-insensitive — `[ ?(x)]` ≡ `[?(x)]` — instead of
+      // preserving the legacy regex quirk that made it a literal bracket.
+      expect(JSONPath.toPathArray(r'$[ ?(x)]'), [r'$', '?(x)']);
     });
   });
 

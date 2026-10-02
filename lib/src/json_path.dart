@@ -387,6 +387,135 @@ class JSONPath {
     return ret;
   }
 
+  /// Apply [rewrite] to every part of [code] that lies outside a string or
+  /// regex literal.
+  ///
+  /// The `@` magic variables are rewritten textually, before tokenization, so
+  /// without this an `@` *inside* a literal would be rewritten too — silently
+  /// turning `/^a@/` into `/^a_$_v/` and making an email pattern match
+  /// nothing. Literal boundaries come from the tokenizer, which already
+  /// resolves the regex-vs-division ambiguity.
+  static String _rewriteOutsideLiterals(
+      String code, String Function(String chunk) rewrite) {
+    final spans = Tokenizer.literalSpansOf(code);
+    if (spans == null || spans.isEmpty) {
+      // Nothing to protect: either no literals, or code that does not
+      // tokenize — in which case the evaluator reports the syntax error.
+      return rewrite(code);
+    }
+    final out = StringBuffer();
+    var pos = 0;
+    for (final span in spans) {
+      if (span.start > pos) out.write(rewrite(code.substring(pos, span.start)));
+      out.write(code.substring(span.start, span.end));
+      pos = span.end;
+    }
+    if (pos < code.length) out.write(rewrite(code.substring(pos)));
+    return out.toString();
+  }
+
+  /// Pull every bracketed filter/dynamic expression out of [expr] into [subx],
+  /// replacing each with a `[#%n%]` placeholder.
+  ///
+  /// Handles both forms: `[(expr)]` / `[?(expr)]` (kept verbatim, leading `?`
+  /// included) and the RFC 9535 `[? <expr>]` selector, which is normalized to
+  /// `?(expr)` so downstream filter handling stays uniform. Bracket nesting is
+  /// counted and string/regex literal spans are skipped, so a literal holding
+  /// `]`, `[` or `)` — `/^[x\]]+$/`, `'a]b'` — cannot truncate the expression
+  /// or terminate the bracket early.
+  static String _extractBracketExpressions(String expr, List<String> subx) {
+    final spans = Tokenizer.literalSpansOf(expr) ?? const [];
+    final out = StringBuffer();
+    var pos = 0;
+    while (pos < expr.length) {
+      // Jump straight to the next '[' that is not inside a literal.
+      final open = _indexOfOutsideLiteral(expr, '[', pos, spans);
+      if (open < 0) break;
+      final close = _matchingBracket(expr, open, spans);
+      if (close < 0) {
+        // Unbalanced '[' — leave the rest as-is, as the old regexes did.
+        break;
+      }
+      final inner = expr.substring(open + 1, close);
+      final extracted = _filterSubExpression(inner);
+      if (extracted == null) {
+        // Not a filter/dynamic expression (e.g. a plain index) — copy through
+        // and keep scanning after this bracket.
+        out.write(expr.substring(pos, close + 1));
+        pos = close + 1;
+        continue;
+      }
+      out.write(expr.substring(pos, open));
+      subx.add(extracted);
+      // %#..% sentinel namespace — quoted properties get their '%' escaped
+      // before substitution, so user data can never produce this shape
+      // (issue #6).
+      out.write('[#%${subx.length - 1}%]');
+      pos = close + 1;
+    }
+    out.write(expr.substring(pos));
+    return out.toString();
+  }
+
+  /// The subx form of a bracketed expression's contents, or null when the
+  /// bracket holds neither a parenthesized expression nor a `[? ...]` filter
+  /// selector. A parenthesized `[?(...)]`/`[(...)]` is returned verbatim; a bare
+  /// `[? ...]` selector is wrapped as `?(...)`.
+  static String? _filterSubExpression(String inner) {
+    // Whitespace-insensitive: the paren/dynamic form may follow the bracket
+    // with or without space (`[ ?(x)]` ≡ `[?(x)]`), and the bare form
+    // likewise (`[ ? expr ]` ≡ `[?expr]`).
+    final trimmed = inner.trimLeft();
+    if (trimmed.startsWith('?(') || trimmed.startsWith('(')) {
+      return trimmed;
+    }
+    if (!trimmed.startsWith('?')) return null;
+    final body = trimmed.substring(1).trim();
+    // `[?]` / `[? ]` carry no expression.
+    if (body.isEmpty) return null;
+    return '?($body)';
+  }
+
+  /// Index of the first [needle] at or after [from] that lies outside every
+  /// literal span, or -1.
+  static int _indexOfOutsideLiteral(
+      String s, String needle, int from, List<({int start, int end})> spans) {
+    var i = from;
+    while (i < s.length) {
+      final at = s.indexOf(needle, i);
+      if (at < 0) return -1;
+      if (!_insideLiteral(spans, at)) return at;
+      i = at + 1;
+    }
+    return -1;
+  }
+
+  /// The index of the `]` closing the `[` at [open], or -1 when unbalanced.
+  static int _matchingBracket(
+      String s, int open, List<({int start, int end})> spans) {
+    var depth = 0;
+    var i = open;
+    while (i < s.length) {
+      if (_insideLiteral(spans, i)) {
+        // Skip the whole literal — brackets inside it are not delimiters.
+        i = spans.firstWhere((s) => s.start <= i && i < s.end).end;
+        continue;
+      }
+      final ch = s[i];
+      if (ch == '[') {
+        depth++;
+      } else if (ch == ']') {
+        depth--;
+        if (depth == 0) return i;
+      }
+      i++;
+    }
+    return -1;
+  }
+
+  static bool _insideLiteral(List<({int start, int end})> spans, int index) =>
+      spans.any((span) => span.start <= index && index < span.end);
+
   static bool _filter(EvaluationContext ctx, String code, Object? v, String vn,
       List<String> path, Object? parent, String? ppn,
       {bool ignoreErrors = false}) {
@@ -402,15 +531,17 @@ class JSONPath {
       sandbox[r'_$_path'] = toPathString([...path, vn]);
     }
 
-    var script = code
-        .replaceAll('@parentProperty', r'_$_parentProperty')
-        .replaceAll('@parent', r'_$_parent')
-        .replaceAll('@property', r'_$_property')
-        .replaceAll('@root', r'_$_root');
-    // Replace all lone @ with _$_v (e.g. !@ → !_$_v, @ === 5 → _$_v === 5)
-    script =
-        script.replaceAllMapped(RegExp(r'@(?![a-zA-Z0-9_])'), (m) => r'_$_v');
-    if (code.contains('@path')) script = script.replaceAll('@path', r'_$_path');
+    final script = _rewriteOutsideLiterals(code, (chunk) {
+      var s = chunk
+          .replaceAll('@parentProperty', r'_$_parentProperty')
+          .replaceAll('@parent', r'_$_parent')
+          .replaceAll('@property', r'_$_property')
+          .replaceAll('@root', r'_$_root');
+      // Replace all lone @ with _$_v (e.g. !@ → !_$_v, @ === 5 → _$_v === 5)
+      s = s.replaceAllMapped(RegExp(r'@(?![a-zA-Z0-9_])'), (m) => r'_$_v');
+      if (code.contains('@path')) s = s.replaceAll('@path', r'_$_path');
+      return s;
+    });
 
     try {
       final r = SafeEval.evaluate(script, sandbox);
@@ -430,16 +561,20 @@ class JSONPath {
     sandbox[r'_$_v'] = val;
     sandbox['key'] = BuiltInFunction((_) => lastPath.toString());
 
-    var script = code
-        .replaceAll('@parentProperty', r'_$_parentProperty')
-        .replaceAll('@parent', r'_$_parent')
-        .replaceAll('@property', r'_$_property')
-        .replaceAll('@root', r'_$_root');
-    // Replace @. @space @) @[ with _$_v prefix
-    script = script.replaceAllMapped(RegExp(r'@(\.)'), (m) => r'_$_v' + m[1]!);
-    script = script.replaceAllMapped(RegExp(r'@(\s)'), (m) => r'_$_v' + m[1]!);
-    script = script.replaceAllMapped(RegExp(r'@(\))'), (m) => r'_$_v' + m[1]!);
-    script = script.replaceAllMapped(RegExp(r'@(\[)'), (m) => r'_$_v' + m[1]!);
+    // Replace @. @space @) @[ with _$_v prefix — skipping string and regex
+    // literal spans, so a pattern keeps its own `@`.
+    final script = _rewriteOutsideLiterals(code, (chunk) {
+      var s = chunk
+          .replaceAll('@parentProperty', r'_$_parentProperty')
+          .replaceAll('@parent', r'_$_parent')
+          .replaceAll('@property', r'_$_property')
+          .replaceAll('@root', r'_$_root');
+      s = s.replaceAllMapped(RegExp(r'@(\.)'), (m) => r'_$_v' + m[1]!);
+      s = s.replaceAllMapped(RegExp(r'@(\s)'), (m) => r'_$_v' + m[1]!);
+      s = s.replaceAllMapped(RegExp(r'@(\))'), (m) => r'_$_v' + m[1]!);
+      s = s.replaceAllMapped(RegExp(r'@(\[)'), (m) => r'_$_v' + m[1]!);
+      return s;
+    });
 
     try {
       return SafeEval.evaluate(script, sandbox);
@@ -497,13 +632,24 @@ class JSONPath {
     // Normalize backtick-escaped properties: .`ident` → ['ident']
     // so they survive the subsequent regex-based tokenization.
     n = n.replaceAllMapped(RegExp(r"""\.`([^`]*)`"""), (m) => "['${m[1]}']");
-    // Replace filter/dynamic bracket tokens with [#i] placeholders using a
-    // balanced scanner — a regex cannot track quote state, so sequences like
-    // `)]` inside a string literal truncated the expression (issue #5).
-    n = _replaceFilterTokens(n, subx);
-    // Escape dots/tildes in bracket-quoted properties
-    n = n.replaceAllMapped(RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
-        (m) => "['${m[1]!.replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
+    // Pull bracketed filter/dynamic expressions out into subx, replacing each
+    // with a [#%n%] placeholder. Scanned rather than regex-matched: a regex
+    // literal may contain `]`, `)` or `[` (`/^[x\]]+$/`), which truncated the
+    // old alternation mid-expression, and quoted strings may contain brackets
+    // too (`)]` inside a string literal, issue #5). Literal spans come from
+    // the tokenizer, bracket nesting from a depth counter. Placeholders use
+    // the %#..% sentinel namespace so they cannot collide with literal quoted
+    // property names such as '#0' (issue #6).
+    n = _extractBracketExpressions(n, subx);
+    // Escape dots/tildes in bracket-quoted properties. Percent signs are
+    // escaped first so the placeholder sentinels below cannot be confused
+    // with user data: a literal '#%0%' property name must survive the
+    // substitution pass untouched (issue #6). Escaping '%' first also keeps
+    // the '.'/'~' sentinels from being double-escaped.
+    n = n.replaceAllMapped(
+        RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
+        (m) =>
+            "['${m[1]!.replaceAll('%', '%@pct@%').replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
     n = n.replaceAll('~', ';~;');
     n = n.replaceAll(RegExp(r"""['"]?\.['"]?(?![^[]*\])|\[['"]?"""), ';');
     n = n.replaceAll('%@%', '.');
@@ -517,139 +663,33 @@ class JSONPath {
     n = n.replaceAll(RegExp(r''';$|'?]|'$'''), '');
 
     final parts = n.split(';');
+    // Substitute placeholders by splicing them into the token, so a
+    // placeholder followed by a tokenization remainder keeps the remainder
+    // instead of being replaced wholesale (issue #6).
+    //
+    // The '%' escape is undone on the token's own segments only, never on the
+    // spliced-in filter text: a filter whose expression literally contains
+    // '%@pct@%' must survive verbatim. Every token is restored, including
+    // placeholder-free ones — '$['#%0%']' alone carries no placeholder, so an
+    // early return there would leak the escape sentinel.
+    final placeholder = RegExp(r'#%(\d+)%');
+    String restorePct(String segment) => segment.replaceAll('%@pct@%', '%');
     final exprList = parts.map((e) {
-      final m = RegExp(r'#(\d+)').firstMatch(e);
-      if (m != null) {
+      if (subx.isEmpty || !e.contains('#%')) return restorePct(e);
+      final spliced = StringBuffer();
+      var cursor = 0;
+      for (final m in placeholder.allMatches(e)) {
+        spliced.write(restorePct(e.substring(cursor, m.start)));
         final idx = int.parse(m[1]!);
-        return idx < subx.length ? subx[idx] : e;
+        spliced.write(idx < subx.length ? subx[idx] : m[0]!);
+        cursor = m.end;
       }
-      return e;
+      spliced.write(restorePct(e.substring(cursor)));
+      return spliced.toString();
     }).toList();
     _cacheStore(expr, exprList);
     return List<String>.from(exprList);
   }
-
-  // ── Filter tokenization (balanced scanner) ──
-
-  // Replaces bracket-embedded filter/dynamic tokens in [n] with [#i]
-  // placeholders (the token text is appended to [subx]).
-  //
-  // Handles the paren form `[(expr)]` / `[?(expr)]` and the bare RFC 9535
-  // form `[?<expr>]` (normalized to `?(<expr>)`). A balanced scanner
-  // (bracket/paren depth + quote state) replaces the legacy non-greedy
-  // regexes so that `)]` or `]` inside a string literal — and brackets
-  // nested inside the filter — no longer truncate the expression (issue #5).
-  static String _replaceFilterTokens(String n, List<String> subx) {
-    final out = StringBuffer();
-    var i = 0;
-    while (i < n.length) {
-      if (n[i] != '[') {
-        out.write(n[i]);
-        i++;
-        continue;
-      }
-      final kind = _classifyFilterToken(n, i);
-      final end =
-          kind == null ? -1 : _scanFilterEnd(n, kind.contentStart, kind.isBare);
-      if (kind == null || end < 0) {
-        // Not a filter token (or unterminated/malformed): keep the `[` as
-        // literal text and continue scanning after it.
-        out.write(n[i]);
-        i++;
-        continue;
-      }
-      subx.add(kind.isBare
-          ? '?(${n.substring(kind.contentStart, end).trim()})'
-          : n.substring(kind.contentStart, end));
-      out.write('[#${subx.length - 1}]');
-      i = end + 1;
-    }
-    return out.toString();
-  }
-
-  // Returns `(contentStart, isBare)` when the bracket at [start] opens a
-  // filter/dynamic token, otherwise `null`.
-  static ({int contentStart, bool isBare})? _classifyFilterToken(
-      String n, int start) {
-    if (start + 1 >= n.length) return null;
-    final j = start + 1;
-    final ch = n[j];
-    if (ch == '?') {
-      // `[?(` → paren form; `[?<anything else>` → bare form.
-      if (j + 1 < n.length && n[j + 1] == '(') {
-        return (contentStart: j, isBare: false);
-      }
-      // `[?]` / `[?<EOF>` have no bare content — stay a literal bracket
-      // (the legacy bare-form regex required at least one content char).
-      if (j + 1 >= n.length || n[j + 1] == ']') return null;
-      return (contentStart: j + 1, isBare: true);
-    }
-    if (ch == '(') return (contentStart: j, isBare: false);
-    // Bare form tolerates whitespace after `[` — but `[ ?(x)]` matched
-    // neither legacy pattern, so it stays a literal bracket.
-    var k = j;
-    while (k < n.length && _isSpace(n[k])) {
-      k++;
-    }
-    if (k >= n.length || n[k] != '?') return null;
-    if (k + 1 < n.length && n[k + 1] == '(') return null;
-    // The legacy bare-form regex required at least one content char and `]`
-    // is not one — `[?]` stays a literal bracket.
-    if (k + 1 >= n.length || n[k + 1] == ']') return null;
-    return (contentStart: k + 1, isBare: true);
-  }
-
-  // Scans from [contentStart] to the token's matching `]` and returns its
-  // index, or -1 when the token is unterminated or malformed (unclosed
-  // quote, unbalanced bracket, or a paren form missing its `)]` anchor).
-  static int _scanFilterEnd(String n, int contentStart, bool isBare) {
-    var depth = 1;
-    var paren = 0;
-    var quote = 0; // 0 = outside strings, else the active quote char
-    for (var i = contentStart; i < n.length; i++) {
-      final c = n.codeUnitAt(i);
-      if (quote != 0) {
-        if (c == 0x5C) {
-          // \ — the next char is escaped and cannot close the string
-          // (RFC 9535 §2.2.3.2), so skip past it.
-          i++;
-        } else if (c == quote) {
-          quote = 0;
-        }
-        continue;
-      }
-      if (c == 0x27 || c == 0x22) {
-        // ' or " — enter a string literal
-        quote = c;
-      } else if (c == 0x5B) {
-        // [
-        depth++;
-      } else if (c == 0x5D) {
-        // ]
-        depth--;
-        if (depth == 0) {
-          if (isBare) return i;
-          // Paren form must end in `)]`: the wrap paren has to be balanced
-          // right before the bracket closes (the legacy `\)]` anchor).
-          return (paren == 0 && n.codeUnitAt(i - 1) == 0x29) ? i : -1;
-        }
-      } else if (c == 0x28) {
-        // (
-        paren++;
-      } else if (c == 0x29) {
-        // )
-        paren--;
-      }
-    }
-    return -1;
-  }
-
-  // Matches the legacy `\s` of the removed bare-form regex: Dart `RegExp` is
-  // ECMAScript-flavored, so this covers form feed / vertical tab and the
-  // Unicode spaces as well as space, tab, LF and CR.
-  static final RegExp _spaceRe = RegExp(r'\s');
-
-  static bool _isSpace(String ch) => _spaceRe.hasMatch(ch);
 
   static String toPathString(List<String> pathArr) {
     if (pathArr.isEmpty) return r'$';

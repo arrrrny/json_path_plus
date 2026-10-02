@@ -1100,6 +1100,106 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════
+  // Section N: Literal '#N' property names (issue #6)
+  // ═══════════════════════════════════════════════════════════════════
+
+  group("N. Literal '#N' property names", () {
+    JSONPath.clearCache();
+
+    test("toPathArray — literal '#0' property after a filter", () {
+      final result = JSONPath.toPathArray(r"$[?(@.a)]['#0']");
+      expect(result, equals([r'$', '?(@.a)', '#0']));
+    });
+
+    test("toPathArray — literal '#0' property alone", () {
+      final result = JSONPath.toPathArray(r"$['#0']");
+      expect(result, equals([r'$', '#0']));
+    });
+
+    test("toPathArray — RFC 9535 filter then literal '#0' property", () {
+      final result = JSONPath.toPathArray(r"$[?@.a]['#0']");
+      expect(result, equals([r'$', '?(@.a)', '#0']));
+    });
+
+    test("toPathArray — literal '#0inner' property after a filter", () {
+      final result = JSONPath.toPathArray(r"$[?(@.a)]['#0inner']");
+      expect(result, equals([r'$', '?(@.a)', '#0inner']));
+    });
+
+    test('toPathArray — placeholder splices trailing remainder', () {
+      final result = JSONPath.toPathArray(r'$[?(@.a)]tail');
+      expect(result, equals([r'$', '?(@.a)tail']));
+    });
+
+    test("query — filter then literal '#0' property lookup", () {
+      final data = {
+        'x': {
+          'a': 1,
+          '#0': 'hashkey',
+        },
+      };
+      final result = JSONPath.query(r"$[?(@.a)]['#0']", data);
+      expect(result, equals(['hashkey']));
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Section N2: Literal '#%N%' property names (review follow-up on #17)
+  // The '#%N%' placeholder sentinel must not swallow a property whose own
+  // name looks like a placeholder.
+  // ═══════════════════════════════════════════════════════════════════
+
+  group("N2. Literal '#%N%' property names", () {
+    JSONPath.clearCache();
+
+    test("toPathArray — literal '#%0%' property after a filter", () {
+      final result = JSONPath.toPathArray(r"$[?(@.a)]['#%0%']");
+      expect(result, equals([r'$', '?(@.a)', '#%0%']));
+    });
+
+    test("toPathArray — literal '#%0%' property alone", () {
+      final result = JSONPath.toPathArray(r"$['#%0%']");
+      expect(result, equals([r'$', '#%0%']));
+    });
+
+    test("toPathArray — RFC 9535 filter then literal '#%0%' property", () {
+      final result = JSONPath.toPathArray(r"$[?@.a]['#%0%']");
+      expect(result, equals([r'$', '?(@.a)', '#%0%']));
+    });
+
+    test("toPathArray — out-of-range placeholder-looking name survives", () {
+      final result = JSONPath.toPathArray(r"$[?(@.a)]['#%1%']");
+      expect(result, equals([r'$', '?(@.a)', '#%1%']));
+    });
+
+    test("toPathArray — percent signs in property names are preserved", () {
+      expect(JSONPath.toPathArray(r"$['100%']"), equals([r'$', '100%']));
+      expect(JSONPath.toPathArray(r"$[?(@.a)]['x%y%z']"),
+          equals([r'$', '?(@.a)', 'x%y%z']));
+      expect(JSONPath.toPathArray(r"$['%']"), equals([r'$', '%']));
+    });
+
+    test("toPathArray — escape sentinel inside a filter is not unescaped", () {
+      // The '%' escape must never be undone inside spliced-in filter text.
+      final result = JSONPath.toPathArray(r"$[?(@.a == '%@pct@%')]");
+      expect(result, equals([r'$', "?(@.a == '%@pct@%')"]));
+    });
+
+    test('query — filter then literal \'#%0%\' property lookup', () {
+      final data = {
+        'x': {
+          'a': 1,
+          '#%0%': 'sentinelish',
+          '100%': 'pct',
+        },
+      };
+      expect(
+          JSONPath.query(r"$[?(@.a)]['#%0%']", data), equals(['sentinelish']));
+      expect(JSONPath.query(r"$[?(@.a)]['100%']", data), equals(['pct']));
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
   // Edge cases
   // ═══════════════════════════════════════════════════════════════════
 
