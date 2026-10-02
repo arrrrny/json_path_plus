@@ -1,11 +1,25 @@
 import 'json_path_options.dart';
 import 'json_path_match.dart';
 import 'sandboxed_script.dart';
+import 'dart:collection';
 import 'dart:math';
 
 class JSONPath {
   final JsonPathOptions? _opts;
-  static final Map<String, dynamic> cache = {};
+
+  /// Upper bound on the number of compiled-path entries [_pathCache] retains.
+  static const int cacheCapacity = 512;
+
+  /// Compiled-path cache used by [toPathArray].
+  ///
+  /// Bounded by [cacheCapacity] and evicted least-recently-used first, so
+  /// callers that build paths dynamically (interpolated keys, per-item
+  /// selectors) cannot grow it without bound over the life of the process.
+  /// Private so that external code cannot inject, mutate or silently drop
+  /// individual entries; the read-only [cacheSize] / [isCached] helpers and
+  /// the whole-cache [clearCache] are the supported public surface.
+  static final LinkedHashMap<String, List<String>> _pathCache =
+      LinkedHashMap<String, List<String>>();
 
   // Mutable static state set before each evaluate call
   static String _resultType = 'value';
@@ -62,6 +76,8 @@ class JSONPath {
         };
     _hasParentSelector = false;
     _ignoreEvalErrors = opts.ignoreEvalErrors;
+    // @root (JSONPath-Plus semantics) refers to the original document root.
+    _sandbox[r'_$_root'] = opts.json;
 
     Object? expr = opts.path;
     final json = opts.json;
@@ -435,9 +451,43 @@ class JSONPath {
 
   // ── Public static utility methods ──
 
+  /// Number of compiled-path entries currently retained by the cache.
+  static int get cacheSize => _pathCache.length;
+
+  /// Whether [expr] currently has a compiled-path entry retained.
+  static bool isCached(String expr) => _pathCache.containsKey(expr);
+
+  /// Drops every cached path, releasing the retained memory.
+  ///
+  /// Deliberately a whole-cache operation: single entries are an internal
+  /// detail, so callers cannot evict or inject paths piecemeal.
+  static void clearCache() => _pathCache.clear();
+
+  /// Returns the cached path array for [expr] and promotes it to
+  /// most-recently-used, or `null` when nothing is cached for it.
+  ///
+  /// The returned list is the live internal entry — callers must not mutate
+  /// it; copy it (e.g. `List<String>.from(...)`) before handing it out.
+  static List<String>? _cacheLookup(String expr) {
+    final cached = _pathCache.remove(expr);
+    if (cached == null) return null;
+    _pathCache[expr] = cached;
+    return cached;
+  }
+
+  /// Caches [pathArray] for [expr], evicting the least recently used entry
+  /// when the cache is already at [cacheCapacity].
+  static void _cacheStore(String expr, List<String> pathArray) {
+    _pathCache[expr] = pathArray;
+    if (_pathCache.length > cacheCapacity) {
+      _pathCache.remove(_pathCache.keys.first);
+    }
+  }
+
   static List<String> toPathArray(String expr) {
-    if (cache.containsKey(expr) && cache[expr] is List<String>) {
-      return List<String>.from(cache[expr] as List);
+    final cached = _cacheLookup(expr);
+    if (cached != null) {
+      return List<String>.from(cached);
     }
     final subx = <String>[];
     var n = expr.replaceAllMapped(
@@ -448,25 +498,12 @@ class JSONPath {
     // Normalize backtick-escaped properties: .`ident` → ['ident']
     // so they survive the subsequent regex-based tokenization.
     n = n.replaceAllMapped(RegExp(r"""\.`([^`]*)`"""), (m) => "['${m[1]}']");
-    // Replace parenthetical filter/dynamic expressions in brackets
-    // Captures ?(expr) or (expr) including the leading ?
+    // Replace filter/dynamic bracket tokens with [#%i%] placeholders using a
+    // balanced scanner — a regex cannot track quote state, so sequences like
+    // `)]` inside a string literal truncated the expression (issue #5).
     // Placeholders use the %#..% sentinel namespace so they cannot collide
     // with literal quoted property names such as '#0' (issue #6).
-    n = n.replaceAllMapped(RegExp(r'''\[(\??\(.*?\))\]'''), (m) {
-      subx.add(m[1]!);
-      return '[#%${subx.length - 1}%]';
-    });
-    // RFC 9535 filter selectors: [? <expr>] without wrapping parentheses.
-    // Normalized into the parenthesized ?(expr) form so the downstream
-    // filter handling stays uniform. The alternation keeps quoted strings
-    // and single-level nested brackets intact.
-    n = n.replaceAllMapped(
-      RegExp(r"""\[\s*\?(?!\()((?:[^'"[\]]|'[^']*'|"[^"]*"|\[[^\]]*\])+)\]"""),
-      (m) {
-        subx.add('?(${m[1]!.trim()})');
-        return '[#%${subx.length - 1}%]';
-      },
-    );
+    n = _replaceFilterTokens(n, subx);
     // Escape dots/tildes in bracket-quoted properties. Percent signs are
     // escaped first so the placeholder sentinels below cannot be confused
     // with user data: a literal '#%0%' property name must survive the
@@ -513,9 +550,135 @@ class JSONPath {
       spliced.write(restorePct(e.substring(cursor)));
       return spliced.toString();
     }).toList();
-    cache[expr] = exprList;
+    _cacheStore(expr, exprList);
     return List<String>.from(exprList);
   }
+
+  // ── Filter tokenization (balanced scanner) ──
+
+  // Replaces bracket-embedded filter/dynamic tokens in [n] with [#%i%]
+  // placeholders (the token text is appended to [subx]).
+  //
+  // The %#..% sentinel namespace cannot arise from user data — quoted
+  // properties get their '%' escaped first — so a literal property named
+  // '#0' or '#%0%' is never mistaken for a placeholder (issue #6).
+  //
+  // Handles the paren form `[(expr)]` / `[?(expr)]` and the bare RFC 9535
+  // form `[?<expr>]` (normalized to `?(<expr>)`). A balanced scanner
+  // (bracket/paren depth + quote state) replaces the legacy non-greedy
+  // regexes so that `)]` or `]` inside a string literal — and brackets
+  // nested inside the filter — no longer truncate the expression (issue #5).
+  static String _replaceFilterTokens(String n, List<String> subx) {
+    final out = StringBuffer();
+    var i = 0;
+    while (i < n.length) {
+      if (n[i] != '[') {
+        out.write(n[i]);
+        i++;
+        continue;
+      }
+      final kind = _classifyFilterToken(n, i);
+      final end =
+          kind == null ? -1 : _scanFilterEnd(n, kind.contentStart, kind.isBare);
+      if (kind == null || end < 0) {
+        // Not a filter token (or unterminated/malformed): keep the `[` as
+        // literal text and continue scanning after it.
+        out.write(n[i]);
+        i++;
+        continue;
+      }
+      subx.add(kind.isBare
+          ? '?(${n.substring(kind.contentStart, end).trim()})'
+          : n.substring(kind.contentStart, end));
+      out.write('[#%${subx.length - 1}%]');
+      i = end + 1;
+    }
+    return out.toString();
+  }
+
+  // Returns `(contentStart, isBare)` when the bracket at [start] opens a
+  // filter/dynamic token, otherwise `null`.
+  static ({int contentStart, bool isBare})? _classifyFilterToken(
+      String n, int start) {
+    if (start + 1 >= n.length) return null;
+    final j = start + 1;
+    final ch = n[j];
+    if (ch == '?') {
+      // `[?(` → paren form; `[?<anything else>` → bare form.
+      if (j + 1 < n.length && n[j + 1] == '(') {
+        return (contentStart: j, isBare: false);
+      }
+      // `[?]` / `[?<EOF>` have no bare content — stay a literal bracket
+      // (the legacy bare-form regex required at least one content char).
+      if (j + 1 >= n.length || n[j + 1] == ']') return null;
+      return (contentStart: j + 1, isBare: true);
+    }
+    if (ch == '(') return (contentStart: j, isBare: false);
+    // Bare form tolerates whitespace after `[` — but `[ ?(x)]` matched
+    // neither legacy pattern, so it stays a literal bracket.
+    var k = j;
+    while (k < n.length && _isSpace(n[k])) {
+      k++;
+    }
+    if (k >= n.length || n[k] != '?') return null;
+    if (k + 1 < n.length && n[k + 1] == '(') return null;
+    // The legacy bare-form regex required at least one content char and `]`
+    // is not one — `[?]` stays a literal bracket.
+    if (k + 1 >= n.length || n[k + 1] == ']') return null;
+    return (contentStart: k + 1, isBare: true);
+  }
+
+  // Scans from [contentStart] to the token's matching `]` and returns its
+  // index, or -1 when the token is unterminated or malformed (unclosed
+  // quote, unbalanced bracket, or a paren form missing its `)]` anchor).
+  static int _scanFilterEnd(String n, int contentStart, bool isBare) {
+    var depth = 1;
+    var paren = 0;
+    var quote = 0; // 0 = outside strings, else the active quote char
+    for (var i = contentStart; i < n.length; i++) {
+      final c = n.codeUnitAt(i);
+      if (quote != 0) {
+        if (c == 0x5C) {
+          // \ — the next char is escaped and cannot close the string
+          // (RFC 9535 §2.2.3.2), so skip past it.
+          i++;
+        } else if (c == quote) {
+          quote = 0;
+        }
+        continue;
+      }
+      if (c == 0x27 || c == 0x22) {
+        // ' or " — enter a string literal
+        quote = c;
+      } else if (c == 0x5B) {
+        // [
+        depth++;
+      } else if (c == 0x5D) {
+        // ]
+        depth--;
+        if (depth == 0) {
+          if (isBare) return i;
+          // Paren form must end in `)]`: the wrap paren has to be balanced
+          // right before the bracket closes (the legacy `\)]` anchor).
+          return (paren == 0 && n.codeUnitAt(i - 1) == 0x29) ? i : -1;
+        }
+      } else if (c == 0x28) {
+        // (
+        paren++;
+      } else if (c == 0x29) {
+        // )
+        paren--;
+      }
+    }
+    return -1;
+  }
+
+  // Matches the legacy `\s` of the removed bare-form regex: Dart `RegExp` is
+  // ECMAScript-flavored, so this covers form feed / vertical tab and the
+  // Unicode spaces as well as space, tab, LF and CR.
+  static final RegExp _spaceRe = RegExp(r'\s');
+
+  static bool _isSpace(String ch) => _spaceRe.hasMatch(ch);
 
   static String toPathString(List<String> pathArr) {
     if (pathArr.isEmpty) return r'$';
