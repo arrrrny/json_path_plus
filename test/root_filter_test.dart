@@ -52,7 +52,7 @@ void main() {
           },
           ignoreEvalErrors: true,
         ),
-      );
+      ) as List<Object?>;
       expect(result, hasLength(1));
       expect(result[0], {'v': 5});
     });

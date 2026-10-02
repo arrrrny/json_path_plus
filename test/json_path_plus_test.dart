@@ -712,7 +712,7 @@ void main() {
           path: r'$.store.book[0].title',
           json: data,
           resultType: 'parent',
-        ));
+        )) as List<Object?>;
         expect(result.length, equals(1));
         expect((result[0] as Map)['title'], equals('A'));
       });
