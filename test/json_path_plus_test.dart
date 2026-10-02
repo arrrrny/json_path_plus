@@ -1100,6 +1100,116 @@ void main() {
   });
 
   // ═══════════════════════════════════════════════════════════════════
+  // Quoted-key escaping (toPathString / toPathArray)
+  // ═══════════════════════════════════════════════════════════════════
+
+  group('Quoted-key escaping', () {
+    test("toPathString escapes single quotes", () {
+      expect(JSONPath.toPathString([r'$', "a'b"]), equals(r"$['a\'b']"));
+    });
+
+    test('toPathString escapes backslashes', () {
+      expect(JSONPath.toPathString([r'$', r'a\b']), equals(r"$['a\\b']"));
+    });
+
+    test('toPathString escapes control characters', () {
+      expect(JSONPath.toPathString([r'$', 'a\nb']), equals(r"$['a\nb']"));
+      expect(JSONPath.toPathString([r'$', 'a\rb']), equals(r"$['a\rb']"));
+      expect(JSONPath.toPathString([r'$', 'a\tb']), equals(r"$['a\tb']"));
+    });
+
+    test('toPathString leaves harmless characters alone', () {
+      expect(JSONPath.toPathString([r'$', 'a"b']), equals("\$['a\"b']"));
+      expect(JSONPath.toPathString([r'$', 'a.b']), equals(r"$['a.b']"));
+      expect(JSONPath.toPathString([r'$', 'a~b']), equals(r"$['a~b']"));
+      expect(JSONPath.toPathString([r'$', 'a]b']), equals(r"$['a]b']"));
+    });
+
+    test('toPathArray unescapes quoted keys', () {
+      expect(JSONPath.toPathArray(r"$['a\'b']"), equals([r'$', "a'b"]));
+      expect(JSONPath.toPathArray(r"$['a\\b']"), equals([r'$', r'a\b']));
+      expect(JSONPath.toPathArray(r"$['a\nb']"), equals([r'$', 'a\nb']));
+      expect(JSONPath.toPathArray(r"$['a\rb']"), equals([r'$', 'a\rb']));
+      expect(JSONPath.toPathArray(r"$['a\tb']"), equals([r'$', 'a\tb']));
+    });
+
+    test('toPathArray still parses dot, tilde and bracket-quoted keys', () {
+      expect(JSONPath.toPathArray(r"$['a.b']"), equals([r'$', 'a.b']));
+      expect(JSONPath.toPathArray(r"$['a~b']"), equals([r'$', 'a~b']));
+      expect(JSONPath.toPathArray(r"$['a]b']"), equals([r'$', 'a]b']));
+      expect(JSONPath.toPathArray(r'$["a"]'), equals([r'$', 'a']));
+    });
+
+    test('toPathString → toPathArray round-trips special keys', () {
+      const keys = [
+        "a'b",
+        'a"b',
+        r'a\b',
+        'a.b',
+        'a~b',
+        'a]b',
+        "a']b",
+        r'a\.b',
+        "a'b]c.d~e\\f",
+        'a\nb',
+        'a\tb',
+      ];
+      for (final key in keys) {
+        final pathStr = JSONPath.toPathString([r'$', key]);
+        expect(
+          JSONPath.toPathArray(pathStr),
+          equals([r'$', key]),
+          reason: 'round-trip failed for key "$key" (path: $pathStr)',
+        );
+      }
+    });
+
+    test('keys containing literal placeholder markers round-trip intact', () {
+      // The #21 merge gave '%' its own marker ('%@pct@', restored by the
+      // substitution's restorePct), so user data can no longer mimic or
+      // recombine into the internal %@@…@@% markers — the round-trip
+      // boundary the #11 branch had to pin as a known limitation is fixed.
+      const cases = {
+        'a%@@SQ@@%b': 'a%@@SQ@@%b',
+        'a%@@RB@@%b': 'a%@@RB@@%b',
+        '#%0%': '#%0%',
+        '100%': '100%',
+      };
+      cases.forEach((key, expected) {
+        final pathStr = JSONPath.toPathString([r'$', key]);
+        expect(pathStr, equals("\$['$key']"),
+            reason: 'toPathString must not rewrite a literal marker key');
+        expect(
+          JSONPath.toPathArray(pathStr),
+          equals([r'$', expected]),
+          reason: 'key "$key" must round-trip intact',
+        );
+      });
+    });
+
+    test('query round-trips paths for special keys', () {
+      const keys = [
+        "a'b",
+        'a"b',
+        r'a\b',
+        'a.b',
+        'a~b',
+        'a]b',
+        "a']b",
+        r'a\.b',
+        "a'b]c.d~e\\f",
+      ];
+      for (final key in keys) {
+        final pathStr = JSONPath.toPathString([r'$', key]);
+        expect(
+          JSONPath.query(pathStr, {key: 'found'}),
+          equals(['found']),
+          reason: 'query failed for key "$key" (path: $pathStr)',
+        );
+      }
+    });
+  });
+
   // Section N: Literal '#N' property names (issue #6)
   // ═══════════════════════════════════════════════════════════════════
 
