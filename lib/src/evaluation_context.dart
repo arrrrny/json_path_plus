@@ -1,8 +1,8 @@
 /// Internal, per-evaluation state for a single `JSONPath` run.
 ///
 /// One instance is created by `JSONPath._run` and threaded through
-/// `_trace` / `_typeCheck` / `_doSlice` / `_filter` / `_dynamic` / `_output`
-/// as an explicit argument. It replaced a set of static mutable fields on
+/// `_trace` / `_typeCheck` / `_doSlice` / `_filter` / `_dynamic` / `_output` /
+/// `_cb` as an explicit argument. It replaced a set of static mutable fields on
 /// `JSONPath`, which a re-entrant run would otherwise overwrite for the
 /// remainder of the walk that invoked it — a re-entrant `JSONPath.evaluate`
 /// (for example one made from inside a match `callback`, or from a function
@@ -34,8 +34,13 @@ class EvaluationContext {
   /// Whether filter errors are silently ignored in this run.
   final bool ignoreEvalErrors;
 
-  /// Set as soon as a `^` parent selector is traced anywhere in this run, so
-  /// that `_trace` knows it must expand the pending parent-selector matches.
+  /// Set when a `^` parent selector is traced, and read by the post-chain of
+  /// every ancestor `_trace` frame in this run. `^` is a terminal early-return
+  /// with no user code of its own, so the last walk item that reaches it sets
+  /// this after any interleaved user code (match callbacks, sandbox filter
+  /// functions) has fired, and no user code runs between that set and the
+  /// post-chain reads — a re-entrant run therefore has no observable window
+  /// in which to clobber the flag.
   bool hasParentSelector = false;
 
   EvaluationContext({

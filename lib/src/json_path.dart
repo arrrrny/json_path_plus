@@ -24,6 +24,16 @@ class JSONPath {
 
   JSONPath({JsonPathOptions? opts}) : _opts = opts;
 
+  /// Throwing default backing the `@other()` operator when the options omit
+  /// [JsonPathOptions.otherTypeCallback]. Stateless, so a single tear-off is
+  /// shared by every run instead of being re-allocated per evaluation.
+  static Object? _defaultOtherTypeCallback(
+      Object? val, List<String> path, Object? parent, String? prop) {
+    throw ArgumentError(
+      'You must supply an otherTypeCallback callback option with the @other() operator.',
+    );
+  }
+
   static dynamic evaluate(
     Object? pathOrOpts, [
     Object? json,
@@ -63,12 +73,7 @@ class JSONPath {
       resultType: opts.resultType,
       evalMode: opts.eval,
       sandbox: Map<String, Object?>.from(opts.sandbox ?? {}),
-      otherTypeCallback: opts.otherTypeCallback ??
-          (val, path, parent, prop) {
-            throw ArgumentError(
-              'You must supply an otherTypeCallback callback option with the @other() operator.',
-            );
-          },
+      otherTypeCallback: opts.otherTypeCallback ?? _defaultOtherTypeCallback,
       ignoreEvalErrors: opts.ignoreEvalErrors,
     );
     // @root (JSONPath-Plus semantics) refers to the original document root.

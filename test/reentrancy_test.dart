@@ -3,11 +3,12 @@ import 'package:json_path_plus/json_path_plus.dart';
 
 /// Reentrancy / evaluation-isolation tests.
 ///
-/// Every test here calls `JSONPath.evaluate` from inside a match `callback`,
-/// while an outer `evaluate` walk is still in progress. The inner call must be
-/// fully isolated from the outer one: it may not change how the outer run
-/// behaves for the remainder of its walk (result type, sandbox, eval mode,
-/// error policy, `@other()` callback).
+/// Every test here calls `JSONPath.evaluate` from inside user code invoked by
+/// an in-progress outer walk — a match `callback` (all but the last test) or a
+/// sandbox function fired inside a filter expression (the last one). The inner
+/// call must be fully isolated from the outer one: it may not change how the
+/// outer run behaves for the remainder of its walk (result type, sandbox,
+/// eval mode, error policy, `@other()` callback).
 ///
 /// The `json` fixtures are shaped so the outer's first filter matches (which
 /// fires the callback) and a *later* sibling of the same walk still has work to
@@ -182,6 +183,45 @@ void main() {
           {'n': 9},
         ]),
       );
+    });
+
+    // ── re-entry vector: filter sandbox function ─────────────────────────
+    test(
+        'inner run from a filter sandbox function does not leak into the outer run',
+        () {
+      final data = {
+        'a': [
+          {'t': 1, 'v': 10},
+          {'t': 2, 'v': 20},
+        ],
+      };
+      var calls = 0;
+
+      // Re-enters from *inside* `_filter`'s SafeEval call (a sandbox
+      // BuiltInFunction), not from a match callback — the second re-entry vector
+      // the EvaluationContext doc claims to cover. The `^` also drags the
+      // hasParentSelector expansion through the same interleaving.
+      final result = JSONPath.evaluate(JsonPathOptions(
+        path: r'$.a[?(reenter() > 0)]^',
+        json: data,
+        resultType: 'path',
+        sandbox: {
+          'reenter': BuiltInFunction((args) {
+            calls++;
+            if (calls == 2) {
+              JSONPath.evaluate(JsonPathOptions(
+                path: r'$..*',
+                json: const {'n': 1},
+              ));
+            }
+            return 1;
+          }),
+        },
+      ));
+
+      expect(calls, equals(2));
+      expect(result, everyElement(equals(r"$['a']")));
+      expect(result, hasLength(2));
     });
   });
 }
