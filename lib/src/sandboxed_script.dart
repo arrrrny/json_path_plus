@@ -15,6 +15,9 @@
 /// - Arithmetic: `+`, `-`, `*`, `/`, `%`
 /// - String literals (single and double quotes)
 /// - Number literals (int and float)
+/// - Regex literals: `/pattern/flags` (JS-style; `/` after an operand is
+///   still division). The compiled [RegExp] is accepted by `match()`,
+///   `search()`, and `String.match()` in addition to string patterns.
 /// - `true`, `false`, `null` literals
 /// - Ternary: `cond ? a : b`
 /// - Parentheses for grouping
@@ -80,19 +83,57 @@ class TypeofExpr extends Expr {
   TypeofExpr(this.operand);
 }
 
+/// A JS-style regex literal: `/pattern/flags`. Evaluates to a compiled
+/// [RegExp] that `match()`, `search()`, and `String.match()` accept in
+/// addition to string patterns.
+class RegexExpr extends Expr {
+  final String pattern;
+  final String flags;
+
+  /// The compiled pattern. Built once, when the literal is parsed, so a filter
+  /// evaluated over N candidates compiles it once rather than N times — and so
+  /// an invalid pattern fails at parse time with one located error instead of
+  /// crashing the query mid-filter.
+  final RegExp compiled;
+
+  RegexExpr(this.pattern, this.flags, this.compiled);
+}
+
 // ── Tokenizer ──
 
 class Token {
-  final String type; // 'num', 'str', 'id', 'op', 'punc', 'bool', 'null', 'eof'
+  final String type;
+  // 'num', 'str', 'id', 'op', 'punc', 'bool', 'null', 'regex', 'eof'
   final String value;
-  Token(this.type, this.value);
+  final String flags; // regex flags; only meaningful for 'regex' tokens
+  Token(this.type, this.value, [this.flags = '']);
 }
 
 class Tokenizer {
   final String input;
   int pos = 0;
 
+  /// The source spans of the string and regex literals read so far, in the
+  /// order they appear. Callers that rewrite raw source text (the `@` magic
+  /// variables in a JSONPath filter) use this to leave literal contents
+  /// untouched.
+  final List<({int start, int end})> literals = [];
+
   Tokenizer(this.input);
+
+  /// The literal spans of [input], or null when [input] does not tokenize
+  /// (an unterminated regex literal, say). With no known boundaries there is
+  /// nothing to protect, so callers fall back to rewriting the whole text and
+  /// let the evaluator report the syntax error.
+  static List<({int start, int end})>? literalSpansOf(String input) {
+    final tokenizer = Tokenizer(input);
+    try {
+      tokenizer.tokenize();
+    } on FormatException {
+      return null;
+    }
+    return tokenizer.literals;
+  }
 
   List<Token> tokenize() {
     final tokens = <Token>[];
@@ -118,6 +159,8 @@ class Tokenizer {
           ch == ';') {
         tokens.add(Token('punc', ch));
         pos++;
+      } else if (ch == '/' && _regexAllowed(tokens)) {
+        tokens.add(_readRegex());
       } else if (_isOperatorStart(ch)) {
         tokens.add(_readOperator());
       } else {
@@ -127,6 +170,64 @@ class Tokenizer {
     }
     tokens.add(Token('eof', ''));
     return tokens;
+  }
+
+  /// Decide whether a `/` at the current position starts a regex literal or
+  /// is the division operator, using the same lookahead rule as JS lexers:
+  /// a regex literal may only appear where an operand is expected, i.e.
+  /// not right after a value token or a closing bracket/paren.
+  bool _regexAllowed(List<Token> tokens) {
+    if (tokens.isEmpty) return true;
+    final last = tokens.last;
+    switch (last.type) {
+      case 'num':
+      case 'str':
+      case 'id':
+      case 'bool':
+      case 'null':
+      case 'regex':
+        return false; // an operand just ended → division
+      case 'punc':
+        // After ')' or ']' an expression has ended → division; after any
+        // other punctuation an operand (regex) may begin.
+        return last.value != ')' && last.value != ']';
+      default:
+        return true; // after an operator, an operand may begin
+    }
+  }
+
+  Token _readRegex() {
+    final start = pos;
+    pos++; // skip opening '/'
+    final buffer = StringBuffer();
+    var inCharClass = false;
+    while (pos < input.length) {
+      final ch = input[pos];
+      if (ch == '\\' && pos + 1 < input.length) {
+        buffer.write(ch);
+        buffer.write(input[pos + 1]);
+        pos += 2;
+        continue;
+      }
+      if (ch == '\n' || ch == '\r') {
+        throw FormatException('Unterminated regex literal');
+      }
+      if (ch == '/' && !inCharClass) {
+        pos++; // skip closing '/'
+        final flagStart = pos;
+        while (pos < input.length && _isIdentPart(input[pos])) {
+          pos++;
+        }
+        literals.add((start: start, end: pos));
+        return Token(
+            'regex', buffer.toString(), input.substring(flagStart, pos));
+      }
+      if (ch == '[') inCharClass = true;
+      if (ch == ']') inCharClass = false;
+      buffer.write(ch);
+      pos++;
+    }
+    throw FormatException('Unterminated regex literal');
   }
 
   void _skipWhitespace() {
@@ -144,6 +245,7 @@ class Tokenizer {
   }
 
   Token _readString() {
+    final start = pos;
     final quote = input[pos];
     pos++; // skip opening quote
     final buffer = StringBuffer();
@@ -173,6 +275,7 @@ class Tokenizer {
       pos++;
     }
     pos++; // skip closing quote
+    literals.add((start: start, end: pos));
     return Token('str', buffer.toString());
   }
 
@@ -202,8 +305,8 @@ class Tokenizer {
 
   Token _readOperator() {
     final start = pos;
-    // Try to match longest operator first
-    final remaining = input.substring(pos);
+    // Try to match longest operator first (substring-free: startsWith at
+    // the cursor avoids copying the remaining input on every token).
     final ops = [
       '===',
       '!==',
@@ -234,7 +337,7 @@ class Tokenizer {
       ':',
     ];
     for (final op in ops) {
-      if (remaining.startsWith(op)) {
+      if (input.startsWith(op, pos)) {
         pos += op.length;
         return Token('op', op);
       }
@@ -262,6 +365,10 @@ class Parser {
   final List<Token> tokens;
   int pos = 0;
 
+  /// Current recursive-descent depth, tracked so adversarially nested
+  /// input fails with a [FormatException] instead of a StackOverflowError.
+  int _depth = 0;
+
   Parser(this.tokens);
 
   Expr parse() {
@@ -270,36 +377,50 @@ class Parser {
   }
 
   Expr _parseTernary() {
-    var expr = _parseOr();
-    if (_matchOp('?')) {
-      final consequent = _parseTernary();
-      _expectOp(':');
-      final alternate = _parseTernary();
-      return ConditionalExpr(expr, consequent, alternate);
+    _enter();
+    try {
+      var expr = _parseOr();
+      if (_matchOp('?')) {
+        final consequent = _parseTernary();
+        _expectOp(':');
+        final alternate = _parseTernary();
+        return ConditionalExpr(expr, consequent, alternate);
+      }
+      return expr;
+    } finally {
+      _depth--;
     }
-    return expr;
   }
 
   Expr _parseOr() {
     var left = _parseAnd();
+    var chain = 0;
     while (_matchOp('||')) {
       final right = _parseAnd();
       left = BinaryExpr(left, '||', right);
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseAnd() {
     var left = _parseEquality();
+    var chain = 0;
     while (_matchOp('&&')) {
       final right = _parseEquality();
       left = BinaryExpr(left, '&&', right);
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseEquality() {
     var left = _parseComparison();
+    var chain = 0;
     while (true) {
       if (_matchOp('===')) {
         left = BinaryExpr(left, '===', _parseComparison());
@@ -312,12 +433,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseComparison() {
     var left = _parseAddSub();
+    var chain = 0;
     while (true) {
       if (_matchOp('<')) {
         left = BinaryExpr(left, '<', _parseAddSub());
@@ -330,12 +455,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseAddSub() {
     var left = _parseMulDiv();
+    var chain = 0;
     while (true) {
       if (_matchOp('+')) {
         left = BinaryExpr(left, '+', _parseMulDiv());
@@ -344,12 +473,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseMulDiv() {
     var left = _parseUnary();
+    var chain = 0;
     while (true) {
       if (_matchOp('*')) {
         left = BinaryExpr(left, '*', _parseUnary());
@@ -360,43 +493,72 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseUnary() {
-    if (_matchOp('!')) {
-      return UnaryExpr('!', _parseUnary());
-    }
-    if (_matchOp('-')) {
-      // Check for negative number literal — avoid wrapping
-      if (_current().type == 'num') {
-        final tok = _current();
-        _advance();
-        final val = -num.parse(tok.value);
-        return LiteralExpr(val);
+    _enter();
+    try {
+      if (_matchOp('!')) {
+        return UnaryExpr('!', _parseUnary());
       }
-      return UnaryExpr('-', _parseUnary());
+      if (_matchOp('-')) {
+        // Check for negative number literal — avoid wrapping
+        if (_current().type == 'num') {
+          final tok = _current();
+          _advance();
+          final val = -num.parse(tok.value);
+          return LiteralExpr(val);
+        }
+        return UnaryExpr('-', _parseUnary());
+      }
+      if (_matchOp('+')) {
+        return UnaryExpr('+', _parseUnary());
+      }
+      if (_matchOp('~')) {
+        return UnaryExpr('~', _parseUnary());
+      }
+      if (_peekOp('typeof')) {
+        _advance();
+        return TypeofExpr(_parseUnary());
+      }
+      if (_matchOp('void')) {
+        return UnaryExpr('void', _parseUnary());
+      }
+      return _parsePostfix();
+    } finally {
+      _depth--;
     }
-    if (_matchOp('+')) {
-      return UnaryExpr('+', _parseUnary());
+  }
+
+  /// Track recursive-descent depth; refuse expressions nested deeper than
+  /// [SafeEval.maxNestingDepth]. Past that limit the parser recursion itself
+  /// risks a StackOverflowError, which must surface as a [FormatException].
+  /// The count is in descent frames, not nesting levels — a parenthesis
+  /// level costs two frames (both [_parseTernary] and [_parseUnary] enter
+  /// once per level), so parenthesized nesting caps at ~127 levels. Chain
+  /// links and binary operators, which parse iteratively but still recurse
+  /// at evaluation time, are bounded by their own link counters toward the
+  /// same cap.
+  void _enter() {
+    if (++_depth > SafeEval.maxNestingDepth) {
+      throw const FormatException('expression too deeply nested');
     }
-    if (_matchOp('~')) {
-      return UnaryExpr('~', _parseUnary());
-    }
-    if (_peekOp('typeof')) {
-      _advance();
-      return TypeofExpr(_parseUnary());
-    }
-    if (_matchOp('void')) {
-      return UnaryExpr('void', _parseUnary());
-    }
-    return _parsePostfix();
   }
 
   Expr _parsePostfix() {
     var expr = _parsePrimary();
+    var chain = 0;
     while (true) {
+      // Chain links build a left-deep AST that recurses at evaluation time,
+      // so each link counts toward the same nesting cap.
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
       if (_matchPunc('.')) {
         // Member access: obj.key
         final prop = _expectIdentifier();
@@ -442,6 +604,22 @@ class Parser {
     if (tok.type == 'null') {
       _advance();
       return LiteralExpr(null);
+    }
+    if (tok.type == 'regex') {
+      _advance();
+      // Compile eagerly: a lexically valid literal whose pattern is invalid
+      // (`/(/)`) is not a JSONPath syntax error, so it must not be left to
+      // blow up mid-filter where it takes the whole query down with it —
+      // unlike an invalid *string* pattern, which RFC 9535 turns into
+      // LogicalFalse. One deterministic, well-located error instead.
+      final RegExp compiled;
+      try {
+        compiled = SafeEval._compileRegex(tok.value, tok.flags);
+      } on FormatException catch (e) {
+        throw FormatException(
+            'Invalid regex literal /${tok.value}/${tok.flags}: ${e.message}');
+      }
+      return RegexExpr(tok.value, tok.flags, compiled);
     }
     if (tok.type == 'id') {
       _advance();
@@ -517,12 +695,35 @@ class Parser {
 // ── Evaluator ──
 
 class SafeEval {
+  /// Maximum accepted expression length (64 KiB). Longer expressions throw
+  /// [FormatException] before any parsing happens.
+  static const int maxExpressionLength = 64 * 1024;
+
+  /// Maximum accepted expression nesting depth. Deeper expressions throw
+  /// [FormatException] instead of overflowing the stack during recursive
+  /// descent parsing or evaluation.
+  ///
+  /// Depth is counted in recursive-descent frames and chain links, not
+  /// uniform nesting levels: each parenthesis level costs two frames
+  /// (parenthesized nesting therefore caps at ~127 levels), each unary
+  /// operator one frame, and every member/index/call chain link or binary
+  /// operator one link.
+  static const int maxNestingDepth = 256;
+
   /// Parse and evaluate a JS-style expression string with the given
   /// variable bindings.
   ///
   /// The RFC 9535 `match()` and `search()` function extensions are always
   /// available; entries in [context] shadow them.
+  ///
+  /// Throws [FormatException] if [code] exceeds [maxExpressionLength] or is
+  /// nested deeper than [maxNestingDepth] — resource limits that keep
+  /// adversarial input from crashing with a StackOverflowError.
   static Object? evaluate(String code, Map<String, Object?> context) {
+    if (code.length > maxExpressionLength) {
+      throw const FormatException(
+          'expression too long (limit is $maxExpressionLength characters)');
+    }
     final subs = <String, Object?>{
       'match': BuiltInFunction(_rfcMatch),
       'search': BuiltInFunction(_rfcSearch),
@@ -549,13 +750,21 @@ class SafeEval {
     if (args.length != 2) return false;
     final value = args[0];
     final pattern = args[1];
-    if (value is! String || pattern is! String) return false;
+    if (value is! String) return false;
     final RegExp regex;
-    try {
-      // match() is anchored: the pattern must cover the entire string.
-      regex = RegExp(partial ? pattern : '^(?:$pattern)\$');
-    } on FormatException {
-      return false; // invalid pattern → LogicalFalse (RFC 9535)
+    if (pattern is RegExp) {
+      // A regex literal is self-contained: /^a/ keeps its JS meaning
+      // ("starts with a") whether it reaches match() or search().
+      regex = pattern;
+    } else if (pattern is String) {
+      try {
+        // match() is anchored: the pattern must cover the entire string.
+        regex = RegExp(partial ? pattern : '^(?:$pattern)\$');
+      } on FormatException {
+        return false; // invalid pattern → LogicalFalse (RFC 9535)
+      }
+    } else {
+      return false;
     }
     return regex.hasMatch(value);
   }
@@ -587,7 +796,31 @@ class SafeEval {
       case TypeofExpr():
         final val = _evalAst(ast.operand, subs);
         return _typeofVal(val);
+      case RegexExpr():
+        return ast.compiled;
     }
+  }
+
+  /// The JS regex flags this engine accepts: `i`, `m`, `s`, `u` map to Dart
+  /// [RegExp] options; `g`, `y`, and `d` are accepted as no-ops. Anything else
+  /// is a typo in a JSONPath-Plus config and is rejected rather than silently
+  /// dropped, matching JS.
+  static const String _knownRegexFlags = 'gimsuyd';
+
+  /// Compile a regex literal (`/pattern/flags`) into a Dart [RegExp].
+  static RegExp _compileRegex(String pattern, String flags) {
+    for (final flag in flags.split('')) {
+      if (!_knownRegexFlags.contains(flag)) {
+        throw FormatException('Unknown regex flag "$flag" in /$pattern/$flags');
+      }
+    }
+    return RegExp(
+      pattern,
+      multiLine: flags.contains('m'),
+      caseSensitive: !flags.contains('i'),
+      dotAll: flags.contains('s'),
+      unicode: flags.contains('u'),
+    );
   }
 
   static Object? _evalBinary(BinaryExpr ast, Map<String, Object?> subs) {
@@ -612,17 +845,21 @@ class SafeEval {
         return !_looseEquals(
             _evalAst(ast.left, subs), _evalAst(ast.right, subs));
       case '<':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <
-            0;
+        final cl =
+            _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return cl != null && cl < 0;
       case '>':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >
-            0;
+        final cg =
+            _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return cg != null && cg > 0;
       case '<=':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) <=
-            0;
+        final cle =
+            _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return cle != null && cle <= 0;
       case '>=':
-        return _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs)) >=
-            0;
+        final cge =
+            _compare(_evalAst(ast.left, subs), _evalAst(ast.right, subs));
+        return cge != null && cge >= 0;
       case '+':
         final l = _evalAst(ast.left, subs);
         final r = _evalAst(ast.right, subs);
@@ -810,6 +1047,7 @@ class SafeEval {
     if (val is String) return 'string';
     if (val is List) return 'array';
     if (val is Map) return 'object';
+    if (val is RegExp) return 'object'; // JS: a regex literal is an object
     if (val is Function) return 'function';
     return 'undefined';
   }
@@ -847,10 +1085,15 @@ bool _looseEquals(Object? a, Object? b) {
   return a == b;
 }
 
-int _compare(Object? a, Object? b) {
+/// Three-way comparison; null when the operands are not comparable (not both
+/// numbers or both strings), so ordered comparisons yield false for mixed
+/// types, for booleans, and for NaN (JS NaN semantics; RFC 9535 typed
+/// comparison).
+int? _compare(Object? a, Object? b) {
+  if ((a is double && a.isNaN) || (b is double && b.isNaN)) return null;
   if (a is num && b is num) return a.compareTo(b);
   if (a is String && b is String) return a.compareTo(b);
-  return 0;
+  return null;
 }
 
 num _toNum(Object? val) {
@@ -924,9 +1167,15 @@ class _MethodProxy {
           return target;
         case 'match':
           // JS-like first match: returns the matching substring or null.
-          if (args.isNotEmpty && args[0] is String) {
+          // Accepts a regex literal object as well as a string pattern.
+          if (args.isNotEmpty) {
             try {
-              return RegExp(args[0] as String).stringMatch(target);
+              if (args[0] is RegExp) {
+                return (args[0] as RegExp).stringMatch(target);
+              }
+              if (args[0] is String) {
+                return RegExp(args[0] as String).stringMatch(target);
+              }
             } on FormatException {
               return null;
             }

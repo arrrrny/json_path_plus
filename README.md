@@ -195,6 +195,20 @@ JSONPath.toPointer(['$', 'store', 'book', '0', 'title']);
 // → '/store/book/0/title'
 ```
 
+### Path cache
+
+`toPathArray` memoizes compiled paths internally. The cache is private and
+bounded: it retains at most `JSONPath.cacheCapacity` (512) entries and evicts
+the least recently used one when full, so workloads that build paths
+dynamically (interpolated keys, per-item selectors) cannot grow it without
+bound. Only read-only inspection is exposed:
+
+```dart
+JSONPath.cacheSize;              // → entries currently retained
+JSONPath.isCached(r'$.a.b');     // → true if that path is cached
+JSONPath.clearCache();           // → drop every cached path
+```
+
 ### `JsonPathOptions`
 
 | Field               | Type        | Default   | Description                                                               |
@@ -239,6 +253,29 @@ final result = SafeEval.evaluate('1 + 2 * 3 > 5 && "hello" + " world"');
 - **Sound null safety** (Dart 3.x, SDK `>=3.0.0 <4.0.0`)
 - **No `dart:mirrors`** (Flutter-compatible)
 - **No `eval()` or `Function.apply()`** — uses a custom expression parser
+
+## Security notes
+
+- **Resource limits** — `SafeEval` refuses expressions longer than 64 KiB
+  (`SafeEval.maxExpressionLength`) or nested deeper than 256 descent
+  frames (`SafeEval.maxNestingDepth`); both throw `FormatException`
+  (`expression too long` / `expression too deeply nested`) instead of
+  crashing with a `StackOverflowError`. Depth is counted in recursive-descent
+  frames and chain links, not uniform nesting levels — each parenthesis
+  level costs two frames (parenthesized nesting caps at ~127 levels), and
+  every member/index/call chain link or binary operator counts one, so
+  evaluation recursion stays bounded too. If your filter or dynamic
+  expressions ever embed untrusted input, treat `FormatException` as
+  "reject this query" — an uncaught `Error` is not a recoverable outcome.
+- **ReDoS caveat for interpolated regex patterns** — `match()`, `search()`,
+  and `.match()` compile their pattern with Dart's `RegExp`. Patterns
+  embedded in the path string are authored by the developer and considered
+  trusted, but a pattern interpolated from external input (user data, remote
+  config) can be pathological and hang evaluation — Dart's `RegExp` offers
+  no match-timeout knob. If patterns ever come from untrusted sources, cap
+  their length (a few hundred characters is a practical ceiling), restrict
+  them to known-safe constructs, and/or run the query in an isolate you can
+  kill.
 
 ## Similar packages
 

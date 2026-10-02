@@ -268,6 +268,35 @@ void main() {
       );
     });
 
+    test('Incomparable types never match <, >, <=, >= (issue #4)', () {
+      final data = {
+        'items': [
+          {'name': 'abc'},
+          {'name': 'zzz'},
+        ],
+      };
+      expect(
+        JSONPath.query(r'$.items[?(@.name <= 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name >= 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name < 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(@.name > 5)].name', data),
+        equals([]),
+      );
+      expect(
+        JSONPath.query(r'$.items[?(5 <= @.name)].name', data),
+        equals([]),
+      );
+    });
+
     test('Boolean operators: && and ||', () {
       final data = {
         'items': [
@@ -870,6 +899,54 @@ void main() {
       expect(SafeEval.evaluate('1 >= 2', {}), equals(false));
     });
 
+    test('incomparable types: <, >, <=, >= yield false (issue #4)', () {
+      // string vs number, both operand orders (JS: NaN → false;
+      // RFC 9535: typed comparison → false)
+      expect(SafeEval.evaluate("'abc' < 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' > 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' <= 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' >= 5", {}), equals(false));
+      expect(SafeEval.evaluate("5 < 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 > 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 <= 'abc'", {}), equals(false));
+      expect(SafeEval.evaluate("5 >= 'abc'", {}), equals(false));
+      // null and composite operands are also incomparable with numbers
+      expect(SafeEval.evaluate('null < 5', {}), equals(false));
+      expect(SafeEval.evaluate('null >= 5', {}), equals(false));
+      expect(
+          SafeEval.evaluate('a < 5', {
+            'a': [1, 2]
+          }),
+          equals(false));
+      expect(
+          SafeEval.evaluate('a <= 5', {
+            'a': {'x': 1}
+          }),
+          equals(false));
+      // booleans have no JSON ordering: every ordered comparison is false,
+      // even though JS would coerce them numerically via Number()
+      expect(SafeEval.evaluate('true >= false', {}), equals(false));
+      expect(SafeEval.evaluate('true < false', {}), equals(false));
+      expect(SafeEval.evaluate('false > true', {}), equals(false));
+      expect(SafeEval.evaluate('true <= false', {}), equals(false));
+      // NaN is incomparable (JS: any ordered comparison against NaN is false;
+      // Dart's num.compareTo would total-order it above every other value)
+      expect(SafeEval.evaluate('0/0 > 5', {}), equals(false));
+      expect(SafeEval.evaluate('0/0 < 5', {}), equals(false));
+      expect(SafeEval.evaluate('5 >= 0/0', {}), equals(false));
+      expect(SafeEval.evaluate('a / b > 5', {'a': 0, 'b': 0}), equals(false));
+      // infinite operands are still ordered normally
+      expect(SafeEval.evaluate('a / b > 5', {'a': 10, 'b': 0}), equals(true));
+      // same-type comparisons still work
+      expect(SafeEval.evaluate("'a' < 'b'", {}), equals(true));
+      expect(SafeEval.evaluate("'b' >= 'a'", {}), equals(true));
+      expect(SafeEval.evaluate('2 <= 2', {}), equals(true));
+      // ==/=== semantics unchanged
+      expect(SafeEval.evaluate("'abc' == 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' === 5", {}), equals(false));
+      expect(SafeEval.evaluate("'abc' != 5", {}), equals(true));
+    });
+
     test('boolean logic', () {
       expect(SafeEval.evaluate('true && false', {}), equals(false));
       expect(SafeEval.evaluate('true || false', {}), equals(true));
@@ -973,21 +1050,21 @@ void main() {
 
   group('M. Caching', () {
     test('toPathArray caches results', () {
-      JSONPath.cache.clear();
+      JSONPath.clearCache();
       final expr = r'$.store.book[0].title';
       final result1 = JSONPath.toPathArray(expr);
       final result2 = JSONPath.toPathArray(expr);
       expect(result1, equals(result2));
-      expect(JSONPath.cache.containsKey(expr), isTrue);
+      expect(JSONPath.isCached(expr), isTrue);
     });
 
     test('cache can be cleared', () {
-      JSONPath.cache.clear();
+      JSONPath.clearCache();
       final expr = r'$.a.b';
       JSONPath.toPathArray(expr);
-      expect(JSONPath.cache.containsKey(expr), isTrue);
-      JSONPath.cache.remove(expr);
-      expect(JSONPath.cache.containsKey(expr), isFalse);
+      expect(JSONPath.isCached(expr), isTrue);
+      JSONPath.clearCache();
+      expect(JSONPath.isCached(expr), isFalse);
     });
   });
 
@@ -1087,25 +1164,25 @@ void main() {
       }
     });
 
-    test(
-        'keys containing placeholder markers are a documented round-trip boundary',
-        () {
-      // _restoreEscapedChars resolves %@@…@@% markers wherever they appear, so
-      // a key that genuinely contains one is silently rewritten on round-trip
-      // (% itself has no placeholder). Pinned until % gets its own marker.
+    test('keys containing literal placeholder markers round-trip intact', () {
+      // The #21 merge gave '%' its own marker ('%@pct@', restored by the
+      // substitution's restorePct), so user data can no longer mimic or
+      // recombine into the internal %@@…@@% markers — the round-trip
+      // boundary the #11 branch had to pin as a known limitation is fixed.
       const cases = {
-        'a%@@SQ@@%b': "a'b",
-        'a%@@RB@@%b': 'a]b',
+        'a%@@SQ@@%b': 'a%@@SQ@@%b',
+        'a%@@RB@@%b': 'a%@@RB@@%b',
+        '#%0%': '#%0%',
+        '100%': '100%',
       };
-      cases.forEach((key, corrupted) {
+      cases.forEach((key, expected) {
         final pathStr = JSONPath.toPathString([r'$', key]);
         expect(pathStr, equals("\$['$key']"),
             reason: 'toPathString must not rewrite a literal marker key');
         expect(
           JSONPath.toPathArray(pathStr),
-          equals([r'$', corrupted]),
-          reason:
-              'marker-collision boundary: key "$key" round-trips as "$corrupted"',
+          equals([r'$', expected]),
+          reason: 'key "$key" must round-trip intact',
         );
       });
     });
@@ -1130,6 +1207,105 @@ void main() {
           reason: 'query failed for key "$key" (path: $pathStr)',
         );
       }
+    });
+  });
+
+  // Section N: Literal '#N' property names (issue #6)
+  // ═══════════════════════════════════════════════════════════════════
+
+  group("N. Literal '#N' property names", () {
+    JSONPath.clearCache();
+
+    test("toPathArray — literal '#0' property after a filter", () {
+      final result = JSONPath.toPathArray(r"$[?(@.a)]['#0']");
+      expect(result, equals([r'$', '?(@.a)', '#0']));
+    });
+
+    test("toPathArray — literal '#0' property alone", () {
+      final result = JSONPath.toPathArray(r"$['#0']");
+      expect(result, equals([r'$', '#0']));
+    });
+
+    test("toPathArray — RFC 9535 filter then literal '#0' property", () {
+      final result = JSONPath.toPathArray(r"$[?@.a]['#0']");
+      expect(result, equals([r'$', '?(@.a)', '#0']));
+    });
+
+    test("toPathArray — literal '#0inner' property after a filter", () {
+      final result = JSONPath.toPathArray(r"$[?(@.a)]['#0inner']");
+      expect(result, equals([r'$', '?(@.a)', '#0inner']));
+    });
+
+    test('toPathArray — placeholder splices trailing remainder', () {
+      final result = JSONPath.toPathArray(r'$[?(@.a)]tail');
+      expect(result, equals([r'$', '?(@.a)tail']));
+    });
+
+    test("query — filter then literal '#0' property lookup", () {
+      final data = {
+        'x': {
+          'a': 1,
+          '#0': 'hashkey',
+        },
+      };
+      final result = JSONPath.query(r"$[?(@.a)]['#0']", data);
+      expect(result, equals(['hashkey']));
+    });
+  });
+
+  // ═══════════════════════════════════════════════════════════════════
+  // Section N2: Literal '#%N%' property names (review follow-up on #17)
+  // The '#%N%' placeholder sentinel must not swallow a property whose own
+  // name looks like a placeholder.
+  // ═══════════════════════════════════════════════════════════════════
+
+  group("N2. Literal '#%N%' property names", () {
+    JSONPath.clearCache();
+
+    test("toPathArray — literal '#%0%' property after a filter", () {
+      final result = JSONPath.toPathArray(r"$[?(@.a)]['#%0%']");
+      expect(result, equals([r'$', '?(@.a)', '#%0%']));
+    });
+
+    test("toPathArray — literal '#%0%' property alone", () {
+      final result = JSONPath.toPathArray(r"$['#%0%']");
+      expect(result, equals([r'$', '#%0%']));
+    });
+
+    test("toPathArray — RFC 9535 filter then literal '#%0%' property", () {
+      final result = JSONPath.toPathArray(r"$[?@.a]['#%0%']");
+      expect(result, equals([r'$', '?(@.a)', '#%0%']));
+    });
+
+    test("toPathArray — out-of-range placeholder-looking name survives", () {
+      final result = JSONPath.toPathArray(r"$[?(@.a)]['#%1%']");
+      expect(result, equals([r'$', '?(@.a)', '#%1%']));
+    });
+
+    test("toPathArray — percent signs in property names are preserved", () {
+      expect(JSONPath.toPathArray(r"$['100%']"), equals([r'$', '100%']));
+      expect(JSONPath.toPathArray(r"$[?(@.a)]['x%y%z']"),
+          equals([r'$', '?(@.a)', 'x%y%z']));
+      expect(JSONPath.toPathArray(r"$['%']"), equals([r'$', '%']));
+    });
+
+    test("toPathArray — escape sentinel inside a filter is not unescaped", () {
+      // The '%' escape must never be undone inside spliced-in filter text.
+      final result = JSONPath.toPathArray(r"$[?(@.a == '%@pct@%')]");
+      expect(result, equals([r'$', "?(@.a == '%@pct@%')"]));
+    });
+
+    test('query — filter then literal \'#%0%\' property lookup', () {
+      final data = {
+        'x': {
+          'a': 1,
+          '#%0%': 'sentinelish',
+          '100%': 'pct',
+        },
+      };
+      expect(
+          JSONPath.query(r"$[?(@.a)]['#%0%']", data), equals(['sentinelish']));
+      expect(JSONPath.query(r"$[?(@.a)]['100%']", data), equals(['pct']));
     });
   });
 

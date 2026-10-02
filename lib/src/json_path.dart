@@ -1,22 +1,38 @@
+import 'evaluation_context.dart';
 import 'json_path_options.dart';
 import 'json_path_match.dart';
 import 'sandboxed_script.dart';
+import 'dart:collection';
 import 'dart:math';
 
 class JSONPath {
   final JsonPathOptions? _opts;
-  static final Map<String, dynamic> cache = {};
 
-  // Mutable static state set before each evaluate call
-  static String _resultType = 'value';
-  static Object? _evalMode = 'safe';
-  static Map<String, Object?> _sandbox = {};
-  static Object? Function(Object?, List<String>, Object?, String?)?
-      _otherTypeCallback;
-  static bool _hasParentSelector = false;
-  static bool _ignoreEvalErrors = false;
+  /// Upper bound on the number of compiled-path entries [_pathCache] retains.
+  static const int cacheCapacity = 512;
+
+  /// Compiled-path cache used by [toPathArray].
+  ///
+  /// Bounded by [cacheCapacity] and evicted least-recently-used first, so
+  /// callers that build paths dynamically (interpolated keys, per-item
+  /// selectors) cannot grow it without bound over the life of the process.
+  /// Private so that external code cannot inject, mutate or silently drop
+  /// individual entries; the read-only [cacheSize] / [isCached] helpers and
+  /// the whole-cache [clearCache] are the supported public surface.
+  static final LinkedHashMap<String, List<String>> _pathCache =
+      LinkedHashMap<String, List<String>>();
 
   JSONPath({JsonPathOptions? opts}) : _opts = opts;
+
+  /// Throwing default backing the `@other()` operator when the options omit
+  /// [JsonPathOptions.otherTypeCallback]. Stateless, so a single tear-off is
+  /// shared by every run instead of being re-allocated per evaluation.
+  static Object? _defaultOtherTypeCallback(
+      Object? val, List<String> path, Object? parent, String? prop) {
+    throw ArgumentError(
+      'You must supply an otherTypeCallback callback option with the @other() operator.',
+    );
+  }
 
   static dynamic evaluate(
     Object? pathOrOpts, [
@@ -51,17 +67,17 @@ class JSONPath {
   dynamic evaluateOpts([JsonPathOptions? arg]) => _run(arg ?? _opts!);
 
   static dynamic _run(JsonPathOptions opts) {
-    _resultType = opts.resultType;
-    _evalMode = opts.eval;
-    _sandbox = Map<String, Object?>.from(opts.sandbox ?? {});
-    _otherTypeCallback = opts.otherTypeCallback ??
-        (val, path, parent, prop) {
-          throw ArgumentError(
-            'You must supply an otherTypeCallback callback option with the @other() operator.',
-          );
-        };
-    _hasParentSelector = false;
-    _ignoreEvalErrors = opts.ignoreEvalErrors;
+    // All per-run state lives in this context, created fresh for every
+    // evaluation, so a re-entrant run cannot disturb an in-flight one.
+    final ctx = EvaluationContext(
+      resultType: opts.resultType,
+      evalMode: opts.eval,
+      sandbox: Map<String, Object?>.from(opts.sandbox ?? {}),
+      otherTypeCallback: opts.otherTypeCallback ?? _defaultOtherTypeCallback,
+      ignoreEvalErrors: opts.ignoreEvalErrors,
+    );
+    // @root (JSONPath-Plus semantics) refers to the original document root.
+    ctx.sandbox[r'_$_root'] = opts.json;
 
     Object? expr = opts.path;
     final json = opts.json;
@@ -75,18 +91,17 @@ class JSONPath {
     if (exprList.isNotEmpty && exprList[0] == r'$' && exprList.length > 1) {
       exprList.removeAt(0);
     }
-    _hasParentSelector = false;
 
-    final raw = _trace(exprList, json, [r'$'], opts.parent, opts.parentProperty,
-        opts.callback, false, false);
+    final raw = _trace(ctx, exprList, json, [r'$'], opts.parent,
+        opts.parentProperty, opts.callback, false, false);
     final result = raw.where((e) => !e.isParentSelector).toList();
 
     if (result.isEmpty) return opts.wrap ? <Object?>[] : null;
     if (!opts.wrap && result.length == 1 && !result[0].hasArrExpr) {
-      return _output(result[0]);
+      return _output(ctx, result[0]);
     }
     return result.fold<List<Object?>>(<Object?>[], (acc, ea) {
-      final v = _output(ea);
+      final v = _output(ctx, ea);
       if (opts.flatten && v is List) {
         acc.addAll(v);
       } else {
@@ -96,8 +111,8 @@ class JSONPath {
     });
   }
 
-  static dynamic _output(JsonPathMatch ea) {
-    switch (_resultType) {
+  static dynamic _output(EvaluationContext ctx, JsonPathMatch ea) {
+    switch (ctx.resultType) {
       case 'all':
         ea.pointer = toPointer(ea.path);
         ea.pathString = toPathString(ea.path);
@@ -113,16 +128,17 @@ class JSONPath {
       case 'pointer':
         return toPointer(ea.path);
       default:
-        throw ArgumentError('Unknown result type: $_resultType');
+        throw ArgumentError('Unknown result type: ${ctx.resultType}');
     }
   }
 
-  static void _cb(JsonPathMatch obj,
+  static void _cb(EvaluationContext ctx, JsonPathMatch obj,
       void Function(Object?, String, JsonPathMatch)? cb, String type) {
-    if (cb != null) cb(_output(obj), type, obj);
+    if (cb != null) cb(_output(ctx, obj), type, obj);
   }
 
   static List<JsonPathMatch> _trace(
+    EvaluationContext ctx,
     List<String> expr,
     Object? val,
     List<String> path,
@@ -140,7 +156,7 @@ class JSONPath {
         parentProperty: parentPropName,
         hasArrExpr: hasArrExpr,
       );
-      _cb(r, callback, 'value');
+      _cb(ctx, r, callback, 'value');
       return [r];
     }
 
@@ -153,20 +169,20 @@ class JSONPath {
     if (loc == '*') {
       _walk(
           val,
-          (m) => add(_trace(
-              x, _get(val, m), _p(path, m), val, m, callback, true, true)));
+          (m) => add(_trace(ctx, x, _get(val, m), _p(path, m), val, m, callback,
+              true, true)));
     } else if (loc == '..') {
-      add(_trace(
-          x, val, path, parent, parentPropName, callback, hasArrExpr, false));
+      add(_trace(ctx, x, val, path, parent, parentPropName, callback,
+          hasArrExpr, false));
       _walk(val, (m) {
         final c = _get(val, m);
         if (_isObj(c)) {
-          add(_trace(
-              List.from(expr), c, _p(path, m), val, m, callback, true, false));
+          add(_trace(ctx, List.from(expr), c, _p(path, m), val, m, callback,
+              true, false));
         }
       });
     } else if (loc == '^') {
-      _hasParentSelector = true;
+      ctx.hasParentSelector = true;
       return [
         JsonPathMatch(
             path: path.sublist(0, path.length - 1),
@@ -184,71 +200,72 @@ class JSONPath {
           parent: parent,
           parentProperty: null,
           hasArrExpr: hasArrExpr);
-      _cb(r, callback, 'property');
+      _cb(ctx, r, callback, 'property');
       return [r];
     } else if (loc == r'$') {
-      add(_trace(x, val, path, null, null, callback, hasArrExpr, false));
+      add(_trace(ctx, x, val, path, null, null, callback, hasArrExpr, false));
     } else if (RegExp(r'^(-?\d*):(-?\d*):?(-?\d*)$').hasMatch(loc)) {
-      final s = _doSlice(loc, x, val, path, parent, parentPropName, callback);
+      final s =
+          _doSlice(ctx, loc, x, val, path, parent, parentPropName, callback);
       if (s != null) add(s);
     } else if (loc.startsWith('?(') && loc.endsWith(')')) {
-      if (identical(_evalMode, false)) {
+      if (identical(ctx.evalMode, false)) {
         throw StateError('Eval [?(expr)] prevented.');
       }
       final code = loc.substring(2, loc.length - 1); // strip ?( and )
       _walk(val, (m) {
-        if (_filter(code, _get(val, m), m, path, parent, parentPropName,
-            ignoreErrors: _ignoreEvalErrors)) {
-          add(_trace(
-              x, _get(val, m), _p(path, m), val, m, callback, true, false));
+        if (_filter(ctx, code, _get(val, m), m, path, parent, parentPropName,
+            ignoreErrors: ctx.ignoreEvalErrors)) {
+          add(_trace(ctx, x, _get(val, m), _p(path, m), val, m, callback, true,
+              false));
         }
       });
     } else if (loc.startsWith('(') && loc.endsWith(')')) {
-      if (identical(_evalMode, false)) {
+      if (identical(ctx.evalMode, false)) {
         throw StateError('Eval [(expr)] prevented.');
       }
-      final key = _dynamic(loc.substring(1, loc.length - 1), val,
+      final key = _dynamic(ctx, loc.substring(1, loc.length - 1), val,
           path.isNotEmpty ? path.last : '', parent, parentPropName);
-      add(_trace([key.toString(), ...x], val, path, parent, parentPropName,
+      add(_trace(ctx, [key.toString(), ...x], val, path, parent, parentPropName,
           callback, hasArrExpr, false));
     } else if (loc.startsWith('@') && loc.endsWith('()')) {
-      if (_typeCheck(loc.substring(1, loc.length - 2), val)) {
+      if (_typeCheck(ctx, loc.substring(1, loc.length - 2), val)) {
         final r = JsonPathMatch(
             path: List.from(path),
             value: val,
             parent: parent,
             parentProperty: parentPropName,
             hasArrExpr: hasArrExpr);
-        _cb(r, callback, 'value');
+        _cb(ctx, r, callback, 'value');
         return [r];
       }
     } else if (loc.startsWith('`') && loc.length > 1) {
       final prop = loc.substring(1);
       if (_has(val, prop)) {
-        add(_trace(x, _get(val, prop), _p(path, prop), val, prop, callback,
+        add(_trace(ctx, x, _get(val, prop), _p(path, prop), val, prop, callback,
             hasArrExpr, true));
       }
     } else if (loc.contains(',')) {
       for (final part in loc.split(',')) {
-        add(_trace([part, ...x], val, path, parent, parentPropName, callback,
-            true, false));
+        add(_trace(ctx, [part, ...x], val, path, parent, parentPropName,
+            callback, true, false));
       }
     } else if (loc.startsWith('`') && loc.endsWith('`') && loc.length > 1) {
       final prop = loc.substring(1, loc.length - 1);
       if (_has(val, prop)) {
-        add(_trace(x, _get(val, prop), _p(path, prop), val, prop, callback,
+        add(_trace(ctx, x, _get(val, prop), _p(path, prop), val, prop, callback,
             hasArrExpr, true));
       }
     } else if (_has(val, loc)) {
-      add(_trace(x, _get(val, loc), _p(path, loc), val, loc, callback,
+      add(_trace(ctx, x, _get(val, loc), _p(path, loc), val, loc, callback,
           hasArrExpr, true));
     }
 
-    if (_hasParentSelector) {
+    if (ctx.hasParentSelector) {
       for (var t = 0; t < ret.length; t++) {
         if (ret[t].isParentSelector) {
-          final tmp = _trace(ret[t].parentSelectorExpr ?? [], val, ret[t].path,
-              parent, parentPropName, callback, hasArrExpr, false);
+          final tmp = _trace(ctx, ret[t].parentSelectorExpr ?? [], val,
+              ret[t].path, parent, parentPropName, callback, hasArrExpr, false);
           if (tmp.length > 1) {
             ret[t] = tmp[0];
             for (var tt = 1; tt < tmp.length; tt++) {
@@ -267,7 +284,7 @@ class JSONPath {
     return ret;
   }
 
-  static bool _typeCheck(String type, Object? val) {
+  static bool _typeCheck(EvaluationContext ctx, String type, Object? val) {
     switch (type) {
       case 'scalar':
         return val == null || val is bool || val is num || val is String;
@@ -293,7 +310,7 @@ class JSONPath {
       case 'null':
         return val == null;
       case 'other':
-        final r = _otherTypeCallback!(val, [], null, null);
+        final r = ctx.otherTypeCallback!(val, [], null, null);
         return r is bool ? r : false;
       default:
         throw ArgumentError('Unknown value type $type');
@@ -334,6 +351,7 @@ class JSONPath {
   static bool _isObj(Object? v) => v != null && (v is Map || v is List);
 
   static List<JsonPathMatch>? _doSlice(
+    EvaluationContext ctx,
     String loc,
     List<String> expr,
     Object? val,
@@ -368,66 +386,210 @@ class JSONPath {
     if (step > 0) end = min(len, end);
     final ret = <JsonPathMatch>[];
     for (var i = start; (step > 0 ? i < end : i > end); i += step) {
-      ret.addAll(_trace([i.toString(), ...expr], val, path, parent, ppn,
+      ret.addAll(_trace(ctx, [i.toString(), ...expr], val, path, parent, ppn,
           callback, true, false));
     }
     return ret;
   }
 
-  static bool _filter(String code, Object? v, String vn, List<String> path,
-      Object? parent, String? ppn,
+  /// Apply [rewrite] to every part of [code] that lies outside a string or
+  /// regex literal.
+  ///
+  /// The `@` magic variables are rewritten textually, before tokenization, so
+  /// without this an `@` *inside* a literal would be rewritten too — silently
+  /// turning `/^a@/` into `/^a_$_v/` and making an email pattern match
+  /// nothing. Literal boundaries come from the tokenizer, which already
+  /// resolves the regex-vs-division ambiguity.
+  static String _rewriteOutsideLiterals(
+      String code, String Function(String chunk) rewrite) {
+    final spans = Tokenizer.literalSpansOf(code);
+    if (spans == null || spans.isEmpty) {
+      // Nothing to protect: either no literals, or code that does not
+      // tokenize — in which case the evaluator reports the syntax error.
+      return rewrite(code);
+    }
+    final out = StringBuffer();
+    var pos = 0;
+    for (final span in spans) {
+      if (span.start > pos) out.write(rewrite(code.substring(pos, span.start)));
+      out.write(code.substring(span.start, span.end));
+      pos = span.end;
+    }
+    if (pos < code.length) out.write(rewrite(code.substring(pos)));
+    return out.toString();
+  }
+
+  /// Pull every bracketed filter/dynamic expression out of [expr] into [subx],
+  /// replacing each with a `[#%n%]` placeholder.
+  ///
+  /// Handles both forms: `[(expr)]` / `[?(expr)]` (kept verbatim, leading `?`
+  /// included) and the RFC 9535 `[? <expr>]` selector, which is normalized to
+  /// `?(expr)` so downstream filter handling stays uniform. Bracket nesting is
+  /// counted and string/regex literal spans are skipped, so a literal holding
+  /// `]`, `[` or `)` — `/^[x\]]+$/`, `'a]b'` — cannot truncate the expression
+  /// or terminate the bracket early.
+  static String _extractBracketExpressions(String expr, List<String> subx) {
+    final spans = Tokenizer.literalSpansOf(expr) ?? const [];
+    final out = StringBuffer();
+    var pos = 0;
+    while (pos < expr.length) {
+      // Jump straight to the next '[' that is not inside a literal.
+      final open = _indexOfOutsideLiteral(expr, '[', pos, spans);
+      if (open < 0) break;
+      final close = _matchingBracket(expr, open, spans);
+      if (close < 0) {
+        // Unbalanced '[' — leave the rest as-is, as the old regexes did.
+        break;
+      }
+      final inner = expr.substring(open + 1, close);
+      final extracted = _filterSubExpression(inner);
+      if (extracted == null) {
+        // Not a filter/dynamic expression (e.g. a plain index) — copy through
+        // and keep scanning after this bracket.
+        out.write(expr.substring(pos, close + 1));
+        pos = close + 1;
+        continue;
+      }
+      out.write(expr.substring(pos, open));
+      subx.add(extracted);
+      // %#..% sentinel namespace — quoted properties get their '%' escaped
+      // before substitution, so user data can never produce this shape
+      // (issue #6).
+      out.write('[#%${subx.length - 1}%]');
+      pos = close + 1;
+    }
+    out.write(expr.substring(pos));
+    return out.toString();
+  }
+
+  /// The subx form of a bracketed expression's contents, or null when the
+  /// bracket holds neither a parenthesized expression nor a `[? ...]` filter
+  /// selector. A parenthesized `[?(...)]`/`[(...)]` is returned verbatim; a bare
+  /// `[? ...]` selector is wrapped as `?(...)`.
+  static String? _filterSubExpression(String inner) {
+    // Whitespace-insensitive: the paren/dynamic form may follow the bracket
+    // with or without space (`[ ?(x)]` ≡ `[?(x)]`), and the bare form
+    // likewise (`[ ? expr ]` ≡ `[?expr]`).
+    final trimmed = inner.trimLeft();
+    if (trimmed.startsWith('?(') || trimmed.startsWith('(')) {
+      return trimmed;
+    }
+    if (!trimmed.startsWith('?')) return null;
+    final body = trimmed.substring(1).trim();
+    // `[?]` / `[? ]` carry no expression.
+    if (body.isEmpty) return null;
+    return '?($body)';
+  }
+
+  /// Index of the first [needle] at or after [from] that lies outside every
+  /// literal span, or -1.
+  static int _indexOfOutsideLiteral(
+      String s, String needle, int from, List<({int start, int end})> spans) {
+    var i = from;
+    while (i < s.length) {
+      final at = s.indexOf(needle, i);
+      if (at < 0) return -1;
+      if (!_insideLiteral(spans, at)) return at;
+      i = at + 1;
+    }
+    return -1;
+  }
+
+  /// The index of the `]` closing the `[` at [open], or -1 when unbalanced.
+  static int _matchingBracket(
+      String s, int open, List<({int start, int end})> spans) {
+    var depth = 0;
+    var i = open;
+    while (i < s.length) {
+      if (_insideLiteral(spans, i)) {
+        // Skip the whole literal — brackets inside it are not delimiters.
+        i = spans.firstWhere((s) => s.start <= i && i < s.end).end;
+        continue;
+      }
+      final ch = s[i];
+      if (ch == '[') {
+        depth++;
+      } else if (ch == ']') {
+        depth--;
+        if (depth == 0) return i;
+      }
+      i++;
+    }
+    return -1;
+  }
+
+  static bool _insideLiteral(List<({int start, int end})> spans, int index) =>
+      spans.any((span) => span.start <= index && index < span.end);
+
+  static bool _filter(EvaluationContext ctx, String code, Object? v, String vn,
+      List<String> path, Object? parent, String? ppn,
       {bool ignoreErrors = false}) {
-    _sandbox[r'_$_parentProperty'] = ppn;
-    _sandbox[r'_$_parent'] = parent;
-    _sandbox[r'_$_property'] = vn;
-    _sandbox[r'_$_v'] = v;
+    final sandbox = ctx.sandbox;
+    sandbox[r'_$_parentProperty'] = ppn;
+    sandbox[r'_$_parent'] = parent;
+    sandbox[r'_$_property'] = vn;
+    sandbox[r'_$_v'] = v;
     // key(@) — RFC 9535-style member key (or array index) of the current
     // node; equivalent to the @property magic variable.
-    _sandbox['key'] = BuiltInFunction((_) => vn);
+    sandbox['key'] = BuiltInFunction((_) => vn);
     if (code.contains('@path')) {
-      _sandbox[r'_$_path'] = toPathString([...path, vn]);
+      sandbox[r'_$_path'] = toPathString([...path, vn]);
     }
 
-    var script = code
-        .replaceAll('@parentProperty', r'_$_parentProperty')
-        .replaceAll('@parent', r'_$_parent')
-        .replaceAll('@property', r'_$_property')
-        .replaceAll('@root', r'_$_root');
-    // Replace all lone @ with _$_v (e.g. !@ → !_$_v, @ === 5 → _$_v === 5)
-    script =
-        script.replaceAllMapped(RegExp(r'@(?![a-zA-Z0-9_])'), (m) => r'_$_v');
-    if (code.contains('@path')) script = script.replaceAll('@path', r'_$_path');
+    final script = _rewriteOutsideLiterals(code, (chunk) {
+      var s = chunk
+          .replaceAll('@parentProperty', r'_$_parentProperty')
+          .replaceAll('@parent', r'_$_parent')
+          .replaceAll('@property', r'_$_property')
+          .replaceAll('@root', r'_$_root');
+      // Replace all lone @ with _$_v (e.g. !@ → !_$_v, @ === 5 → _$_v === 5)
+      s = s.replaceAllMapped(RegExp(r'@(?![a-zA-Z0-9_])'), (m) => r'_$_v');
+      if (code.contains('@path')) s = s.replaceAll('@path', r'_$_path');
+      return s;
+    });
 
     try {
-      final r = SafeEval.evaluate(script, _sandbox);
+      final r = SafeEval.evaluate(script, sandbox);
       return r is bool ? r : (r != null && r != false);
+    } on Error catch (e, st) {
+      // Errors (StateError, StackOverflowError, ...) must not escape the
+      // filter as crashes: swallow per ignoreEvalErrors, otherwise convert
+      // to an exception callers can catch.
+      if (ignoreErrors) return false;
+      Error.throwWithStackTrace(
+          FormatException('filter expression evaluation failed: $e'), st);
     } catch (e) {
       if (ignoreErrors) return false;
       rethrow;
     }
   }
 
-  static Object? _dynamic(
-      String code, Object? val, Object lastPath, Object? parent, String? ppn) {
-    _sandbox[r'_$_parentProperty'] = ppn;
-    _sandbox[r'_$_parent'] = parent;
-    _sandbox[r'_$_property'] = lastPath.toString();
-    _sandbox[r'_$_v'] = val;
-    _sandbox['key'] = BuiltInFunction((_) => lastPath.toString());
+  static Object? _dynamic(EvaluationContext ctx, String code, Object? val,
+      Object lastPath, Object? parent, String? ppn) {
+    final sandbox = ctx.sandbox;
+    sandbox[r'_$_parentProperty'] = ppn;
+    sandbox[r'_$_parent'] = parent;
+    sandbox[r'_$_property'] = lastPath.toString();
+    sandbox[r'_$_v'] = val;
+    sandbox['key'] = BuiltInFunction((_) => lastPath.toString());
 
-    var script = code
-        .replaceAll('@parentProperty', r'_$_parentProperty')
-        .replaceAll('@parent', r'_$_parent')
-        .replaceAll('@property', r'_$_property')
-        .replaceAll('@root', r'_$_root');
-    // Replace @. @space @) @[ with _$_v prefix
-    script = script.replaceAllMapped(RegExp(r'@(\.)'), (m) => r'_$_v' + m[1]!);
-    script = script.replaceAllMapped(RegExp(r'@(\s)'), (m) => r'_$_v' + m[1]!);
-    script = script.replaceAllMapped(RegExp(r'@(\))'), (m) => r'_$_v' + m[1]!);
-    script = script.replaceAllMapped(RegExp(r'@(\[)'), (m) => r'_$_v' + m[1]!);
+    // Replace @. @space @) @[ with _$_v prefix — skipping string and regex
+    // literal spans, so a pattern keeps its own `@`.
+    final script = _rewriteOutsideLiterals(code, (chunk) {
+      var s = chunk
+          .replaceAll('@parentProperty', r'_$_parentProperty')
+          .replaceAll('@parent', r'_$_parent')
+          .replaceAll('@property', r'_$_property')
+          .replaceAll('@root', r'_$_root');
+      s = s.replaceAllMapped(RegExp(r'@(\.)'), (m) => r'_$_v' + m[1]!);
+      s = s.replaceAllMapped(RegExp(r'@(\s)'), (m) => r'_$_v' + m[1]!);
+      s = s.replaceAllMapped(RegExp(r'@(\))'), (m) => r'_$_v' + m[1]!);
+      s = s.replaceAllMapped(RegExp(r'@(\[)'), (m) => r'_$_v' + m[1]!);
+      return s;
+    });
 
     try {
-      return SafeEval.evaluate(script, _sandbox);
+      return SafeEval.evaluate(script, sandbox);
     } catch (e) {
       rethrow;
     }
@@ -435,9 +597,43 @@ class JSONPath {
 
   // ── Public static utility methods ──
 
+  /// Number of compiled-path entries currently retained by the cache.
+  static int get cacheSize => _pathCache.length;
+
+  /// Whether [expr] currently has a compiled-path entry retained.
+  static bool isCached(String expr) => _pathCache.containsKey(expr);
+
+  /// Drops every cached path, releasing the retained memory.
+  ///
+  /// Deliberately a whole-cache operation: single entries are an internal
+  /// detail, so callers cannot evict or inject paths piecemeal.
+  static void clearCache() => _pathCache.clear();
+
+  /// Returns the cached path array for [expr] and promotes it to
+  /// most-recently-used, or `null` when nothing is cached for it.
+  ///
+  /// The returned list is the live internal entry — callers must not mutate
+  /// it; copy it (e.g. `List<String>.from(...)`) before handing it out.
+  static List<String>? _cacheLookup(String expr) {
+    final cached = _pathCache.remove(expr);
+    if (cached == null) return null;
+    _pathCache[expr] = cached;
+    return cached;
+  }
+
+  /// Caches [pathArray] for [expr], evicting the least recently used entry
+  /// when the cache is already at [cacheCapacity].
+  static void _cacheStore(String expr, List<String> pathArray) {
+    _pathCache[expr] = pathArray;
+    if (_pathCache.length > cacheCapacity) {
+      _pathCache.remove(_pathCache.keys.first);
+    }
+  }
+
   static List<String> toPathArray(String expr) {
-    if (cache.containsKey(expr) && cache[expr] is List<String>) {
-      return List<String>.from(cache[expr] as List);
+    final cached = _cacheLookup(expr);
+    if (cached != null) {
+      return List<String>.from(cached);
     }
     final subx = <String>[];
     var n = expr.replaceAllMapped(
@@ -448,28 +644,23 @@ class JSONPath {
     // Normalize backtick-escaped properties: .`ident` → ['ident']
     // so they survive the subsequent regex-based tokenization.
     n = n.replaceAllMapped(RegExp(r"""\.`([^`]*)`"""), (m) => "['${m[1]}']");
-    // Replace parenthetical filter/dynamic expressions in brackets
-    // Captures ?(expr) or (expr) including the leading ?
-    n = n.replaceAllMapped(RegExp(r'''\[(\??\(.*?\))\]'''), (m) {
-      subx.add(m[1]!);
-      return '[#${subx.length - 1}]';
-    });
-    // RFC 9535 filter selectors: [? <expr>] without wrapping parentheses.
-    // Normalized into the parenthesized ?(expr) form so the downstream
-    // filter handling stays uniform. The alternation keeps quoted strings
-    // and single-level nested brackets intact.
-    n = n.replaceAllMapped(
-      RegExp(r"""\[\s*\?(?!\()((?:[^'"[\]]|'[^']*'|"[^"]*"|\[[^\]]*\])+)\]"""),
-      (m) {
-        subx.add('?(${m[1]!.trim()})');
-        return '[#${subx.length - 1}]';
-      },
-    );
+    // Pull bracketed filter/dynamic expressions out into subx, replacing each
+    // with a [#%n%] placeholder. Scanned rather than regex-matched: a regex
+    // literal may contain `]`, `)` or `[` (`/^[x\]]+$/`), which truncated the
+    // old alternation mid-expression, and quoted strings may contain brackets
+    // too (`)]` inside a string literal, issue #5). Literal spans come from
+    // the tokenizer, bracket nesting from a depth counter. Placeholders use
+    // the %#..% sentinel namespace so they cannot collide with literal quoted
+    // property names such as '#0' (issue #6).
+    n = _extractBracketExpressions(n, subx);
     // Escape dots/tildes in bracket-quoted properties, and neutralize the
     // escape sequences toPathString produces (\\, \', \n, \r, \t) plus any
     // literal ] so the tokenization below cannot split quoted keys apart.
     // Escape pairs (backslash + any character) are consumed as units so an
-    // escaped quote no longer terminates the key.
+    // escaped quote no longer terminates the key. '%' is escaped first, so
+    // user data can never mimic the protection markers (issue #6) — a
+    // literal '#%0%' or '%@@BS@@%' key survives both substitution and
+    // restoration untouched.
     n = n.replaceAllMapped(RegExp(r"""\[['"]((?:\\.|[^\\'"])*?)['"]\]"""), (m) {
       return "['${_protectQuotedKey(m[1]!)}']";
     });
@@ -489,15 +680,31 @@ class JSONPath {
     n = _restoreEscapedChars(n);
 
     final parts = n.split(';');
+    // Substitute placeholders by splicing them into the token, so a
+    // placeholder followed by a tokenization remainder keeps the remainder
+    // instead of being replaced wholesale (issue #6).
+    //
+    // The '%' escape is undone on the token's own segments only, never on the
+    // spliced-in filter text: a filter whose expression literally contains
+    // '%@pct@' must survive verbatim. Every token is restored, including
+    // placeholder-free ones — '$['#%0%']' alone carries no placeholder, so an
+    // early return there would leak the escape sentinel.
+    final placeholder = RegExp(r'#%(\d+)%');
+    String restorePct(String segment) => segment.replaceAll('%@pct@', '%');
     final exprList = parts.map((e) {
-      final m = RegExp(r'#(\d+)').firstMatch(e);
-      if (m != null) {
+      if (subx.isEmpty || !e.contains('#%')) return restorePct(e);
+      final spliced = StringBuffer();
+      var cursor = 0;
+      for (final m in placeholder.allMatches(e)) {
+        spliced.write(restorePct(e.substring(cursor, m.start)));
         final idx = int.parse(m[1]!);
-        return idx < subx.length ? subx[idx] : e;
+        spliced.write(idx < subx.length ? subx[idx] : m[0]!);
+        cursor = m.end;
       }
-      return e;
+      spliced.write(restorePct(e.substring(cursor)));
+      return spliced.toString();
     }).toList();
-    cache[expr] = exprList;
+    _cacheStore(expr, exprList);
     return List<String>.from(exprList);
   }
 
@@ -543,7 +750,13 @@ class JSONPath {
   /// dot/tilde/bracket tokenization exactly like the pre-existing '%@%' and
   /// '%%@@%%' markers do.
   static String _protectQuotedKey(String raw) {
-    final protected = raw.replaceAllMapped(RegExp(r'\\(.)'), (m) {
+    // '%' goes first, and the marker deliberately has no trailing '%' —
+    // '%@pct@' cannot recombine with user data into any other marker shape
+    // (e.g. a literal '%@@SQ@@%' key must not become a quote on restore),
+    // unlike a '%...%'-terminated marker would (issue #6 class).
+    // Restored by the substitution's restorePct.
+    final pctEscaped = raw.replaceAll('%', '%@pct@');
+    final protected = pctEscaped.replaceAllMapped(RegExp(r'\\(.)'), (m) {
       switch (m[1]) {
         case r'\':
           return _escBackslash;
