@@ -1,11 +1,25 @@
 import 'json_path_options.dart';
 import 'json_path_match.dart';
 import 'sandboxed_script.dart';
+import 'dart:collection';
 import 'dart:math';
 
 class JSONPath {
   final JsonPathOptions? _opts;
-  static final Map<String, dynamic> cache = {};
+
+  /// Upper bound on the number of compiled-path entries [_pathCache] retains.
+  static const int cacheCapacity = 512;
+
+  /// Compiled-path cache used by [toPathArray].
+  ///
+  /// Bounded by [cacheCapacity] and evicted least-recently-used first, so
+  /// callers that build paths dynamically (interpolated keys, per-item
+  /// selectors) cannot grow it without bound over the life of the process.
+  /// Private so that external code cannot inject, mutate or silently drop
+  /// individual entries; the read-only [cacheSize] / [isCached] helpers and
+  /// the whole-cache [clearCache] are the supported public surface.
+  static final LinkedHashMap<String, List<String>> _pathCache =
+      LinkedHashMap<String, List<String>>();
 
   // Mutable static state set before each evaluate call
   static String _resultType = 'value';
@@ -62,6 +76,8 @@ class JSONPath {
         };
     _hasParentSelector = false;
     _ignoreEvalErrors = opts.ignoreEvalErrors;
+    // @root (JSONPath-Plus semantics) refers to the original document root.
+    _sandbox[r'_$_root'] = opts.json;
 
     Object? expr = opts.path;
     final json = opts.json;
@@ -446,6 +462,9 @@ class JSONPath {
   /// selector. A parenthesized `[?(...)]`/`[(...)]` is returned verbatim; a bare
   /// `[? ...]` selector is wrapped as `?(...)`.
   static String? _filterSubExpression(String inner) {
+    // Whitespace-insensitive: the paren/dynamic form may follow the bracket
+    // with or without space (`[ ?(x)]` ≡ `[?(x)]`), and the bare form
+    // likewise (`[ ? expr ]` ≡ `[?expr]`).
     final trimmed = inner.trimLeft();
     if (trimmed.startsWith('?(') || trimmed.startsWith('(')) {
       return trimmed;
@@ -564,9 +583,43 @@ class JSONPath {
 
   // ── Public static utility methods ──
 
+  /// Number of compiled-path entries currently retained by the cache.
+  static int get cacheSize => _pathCache.length;
+
+  /// Whether [expr] currently has a compiled-path entry retained.
+  static bool isCached(String expr) => _pathCache.containsKey(expr);
+
+  /// Drops every cached path, releasing the retained memory.
+  ///
+  /// Deliberately a whole-cache operation: single entries are an internal
+  /// detail, so callers cannot evict or inject paths piecemeal.
+  static void clearCache() => _pathCache.clear();
+
+  /// Returns the cached path array for [expr] and promotes it to
+  /// most-recently-used, or `null` when nothing is cached for it.
+  ///
+  /// The returned list is the live internal entry — callers must not mutate
+  /// it; copy it (e.g. `List<String>.from(...)`) before handing it out.
+  static List<String>? _cacheLookup(String expr) {
+    final cached = _pathCache.remove(expr);
+    if (cached == null) return null;
+    _pathCache[expr] = cached;
+    return cached;
+  }
+
+  /// Caches [pathArray] for [expr], evicting the least recently used entry
+  /// when the cache is already at [cacheCapacity].
+  static void _cacheStore(String expr, List<String> pathArray) {
+    _pathCache[expr] = pathArray;
+    if (_pathCache.length > cacheCapacity) {
+      _pathCache.remove(_pathCache.keys.first);
+    }
+  }
+
   static List<String> toPathArray(String expr) {
-    if (cache.containsKey(expr) && cache[expr] is List<String>) {
-      return List<String>.from(cache[expr] as List);
+    final cached = _cacheLookup(expr);
+    if (cached != null) {
+      return List<String>.from(cached);
     }
     final subx = <String>[];
     var n = expr.replaceAllMapped(
@@ -581,8 +634,8 @@ class JSONPath {
     // with a [#n] placeholder. Scanned rather than regex-matched: a regex
     // literal may contain `]`, `)` or `[` (`/^[x\]]+$/`), which truncated the
     // old alternation mid-expression, and quoted strings may contain brackets
-    // too. Literal spans come from the tokenizer, bracket nesting from a
-    // depth counter.
+    // too (`)]` inside a string literal, issue #5). Literal spans come from
+    // the tokenizer, bracket nesting from a depth counter.
     n = _extractBracketExpressions(n, subx);
     // Escape dots/tildes in bracket-quoted properties
     n = n.replaceAllMapped(RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
@@ -608,7 +661,7 @@ class JSONPath {
       }
       return e;
     }).toList();
-    cache[expr] = exprList;
+    _cacheStore(expr, exprList);
     return List<String>.from(exprList);
   }
 
