@@ -305,8 +305,8 @@ class Tokenizer {
 
   Token _readOperator() {
     final start = pos;
-    // Try to match longest operator first
-    final remaining = input.substring(pos);
+    // Try to match longest operator first (substring-free: startsWith at
+    // the cursor avoids copying the remaining input on every token).
     final ops = [
       '===',
       '!==',
@@ -337,7 +337,7 @@ class Tokenizer {
       ':',
     ];
     for (final op in ops) {
-      if (remaining.startsWith(op)) {
+      if (input.startsWith(op, pos)) {
         pos += op.length;
         return Token('op', op);
       }
@@ -365,6 +365,10 @@ class Parser {
   final List<Token> tokens;
   int pos = 0;
 
+  /// Current recursive-descent depth, tracked so adversarially nested
+  /// input fails with a [FormatException] instead of a StackOverflowError.
+  int _depth = 0;
+
   Parser(this.tokens);
 
   Expr parse() {
@@ -373,36 +377,50 @@ class Parser {
   }
 
   Expr _parseTernary() {
-    var expr = _parseOr();
-    if (_matchOp('?')) {
-      final consequent = _parseTernary();
-      _expectOp(':');
-      final alternate = _parseTernary();
-      return ConditionalExpr(expr, consequent, alternate);
+    _enter();
+    try {
+      var expr = _parseOr();
+      if (_matchOp('?')) {
+        final consequent = _parseTernary();
+        _expectOp(':');
+        final alternate = _parseTernary();
+        return ConditionalExpr(expr, consequent, alternate);
+      }
+      return expr;
+    } finally {
+      _depth--;
     }
-    return expr;
   }
 
   Expr _parseOr() {
     var left = _parseAnd();
+    var chain = 0;
     while (_matchOp('||')) {
       final right = _parseAnd();
       left = BinaryExpr(left, '||', right);
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseAnd() {
     var left = _parseEquality();
+    var chain = 0;
     while (_matchOp('&&')) {
       final right = _parseEquality();
       left = BinaryExpr(left, '&&', right);
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseEquality() {
     var left = _parseComparison();
+    var chain = 0;
     while (true) {
       if (_matchOp('===')) {
         left = BinaryExpr(left, '===', _parseComparison());
@@ -415,12 +433,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseComparison() {
     var left = _parseAddSub();
+    var chain = 0;
     while (true) {
       if (_matchOp('<')) {
         left = BinaryExpr(left, '<', _parseAddSub());
@@ -433,12 +455,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseAddSub() {
     var left = _parseMulDiv();
+    var chain = 0;
     while (true) {
       if (_matchOp('+')) {
         left = BinaryExpr(left, '+', _parseMulDiv());
@@ -447,12 +473,16 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseMulDiv() {
     var left = _parseUnary();
+    var chain = 0;
     while (true) {
       if (_matchOp('*')) {
         left = BinaryExpr(left, '*', _parseUnary());
@@ -463,43 +493,72 @@ class Parser {
       } else {
         break;
       }
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
     }
     return left;
   }
 
   Expr _parseUnary() {
-    if (_matchOp('!')) {
-      return UnaryExpr('!', _parseUnary());
-    }
-    if (_matchOp('-')) {
-      // Check for negative number literal — avoid wrapping
-      if (_current().type == 'num') {
-        final tok = _current();
-        _advance();
-        final val = -num.parse(tok.value);
-        return LiteralExpr(val);
+    _enter();
+    try {
+      if (_matchOp('!')) {
+        return UnaryExpr('!', _parseUnary());
       }
-      return UnaryExpr('-', _parseUnary());
+      if (_matchOp('-')) {
+        // Check for negative number literal — avoid wrapping
+        if (_current().type == 'num') {
+          final tok = _current();
+          _advance();
+          final val = -num.parse(tok.value);
+          return LiteralExpr(val);
+        }
+        return UnaryExpr('-', _parseUnary());
+      }
+      if (_matchOp('+')) {
+        return UnaryExpr('+', _parseUnary());
+      }
+      if (_matchOp('~')) {
+        return UnaryExpr('~', _parseUnary());
+      }
+      if (_peekOp('typeof')) {
+        _advance();
+        return TypeofExpr(_parseUnary());
+      }
+      if (_matchOp('void')) {
+        return UnaryExpr('void', _parseUnary());
+      }
+      return _parsePostfix();
+    } finally {
+      _depth--;
     }
-    if (_matchOp('+')) {
-      return UnaryExpr('+', _parseUnary());
+  }
+
+  /// Track recursive-descent depth; refuse expressions nested deeper than
+  /// [SafeEval.maxNestingDepth]. Past that limit the parser recursion itself
+  /// risks a StackOverflowError, which must surface as a [FormatException].
+  /// The count is in descent frames, not nesting levels — a parenthesis
+  /// level costs two frames (both [_parseTernary] and [_parseUnary] enter
+  /// once per level), so parenthesized nesting caps at ~127 levels. Chain
+  /// links and binary operators, which parse iteratively but still recurse
+  /// at evaluation time, are bounded by their own link counters toward the
+  /// same cap.
+  void _enter() {
+    if (++_depth > SafeEval.maxNestingDepth) {
+      throw const FormatException('expression too deeply nested');
     }
-    if (_matchOp('~')) {
-      return UnaryExpr('~', _parseUnary());
-    }
-    if (_peekOp('typeof')) {
-      _advance();
-      return TypeofExpr(_parseUnary());
-    }
-    if (_matchOp('void')) {
-      return UnaryExpr('void', _parseUnary());
-    }
-    return _parsePostfix();
   }
 
   Expr _parsePostfix() {
     var expr = _parsePrimary();
+    var chain = 0;
     while (true) {
+      // Chain links build a left-deep AST that recurses at evaluation time,
+      // so each link counts toward the same nesting cap.
+      if (++chain > SafeEval.maxNestingDepth) {
+        throw const FormatException('expression too deeply nested');
+      }
       if (_matchPunc('.')) {
         // Member access: obj.key
         final prop = _expectIdentifier();
@@ -636,12 +695,35 @@ class Parser {
 // ── Evaluator ──
 
 class SafeEval {
+  /// Maximum accepted expression length (64 KiB). Longer expressions throw
+  /// [FormatException] before any parsing happens.
+  static const int maxExpressionLength = 64 * 1024;
+
+  /// Maximum accepted expression nesting depth. Deeper expressions throw
+  /// [FormatException] instead of overflowing the stack during recursive
+  /// descent parsing or evaluation.
+  ///
+  /// Depth is counted in recursive-descent frames and chain links, not
+  /// uniform nesting levels: each parenthesis level costs two frames
+  /// (parenthesized nesting therefore caps at ~127 levels), each unary
+  /// operator one frame, and every member/index/call chain link or binary
+  /// operator one link.
+  static const int maxNestingDepth = 256;
+
   /// Parse and evaluate a JS-style expression string with the given
   /// variable bindings.
   ///
   /// The RFC 9535 `match()` and `search()` function extensions are always
   /// available; entries in [context] shadow them.
+  ///
+  /// Throws [FormatException] if [code] exceeds [maxExpressionLength] or is
+  /// nested deeper than [maxNestingDepth] — resource limits that keep
+  /// adversarial input from crashing with a StackOverflowError.
   static Object? evaluate(String code, Map<String, Object?> context) {
+    if (code.length > maxExpressionLength) {
+      throw const FormatException(
+          'expression too long (limit is $maxExpressionLength characters)');
+    }
     final subs = <String, Object?>{
       'match': BuiltInFunction(_rfcMatch),
       'search': BuiltInFunction(_rfcSearch),

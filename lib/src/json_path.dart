@@ -551,6 +551,13 @@ class JSONPath {
     try {
       final r = SafeEval.evaluate(script, sandbox);
       return r is bool ? r : (r != null && r != false);
+    } on Error catch (e, st) {
+      // Errors (StateError, StackOverflowError, ...) must not escape the
+      // filter as crashes: swallow per ignoreEvalErrors, otherwise convert
+      // to an exception callers can catch.
+      if (ignoreErrors) return false;
+      Error.throwWithStackTrace(
+          FormatException('filter expression evaluation failed: $e'), st);
     } catch (e) {
       if (ignoreErrors) return false;
       rethrow;
