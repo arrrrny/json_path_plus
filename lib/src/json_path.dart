@@ -450,7 +450,10 @@ class JSONPath {
       }
       out.write(expr.substring(pos, open));
       subx.add(extracted);
-      out.write('[#${subx.length - 1}]');
+      // %#..% sentinel namespace — quoted properties get their '%' escaped
+      // before substitution, so user data can never produce this shape
+      // (issue #6).
+      out.write('[#%${subx.length - 1}%]');
       pos = close + 1;
     }
     out.write(expr.substring(pos));
@@ -631,15 +634,23 @@ class JSONPath {
     // so they survive the subsequent regex-based tokenization.
     n = n.replaceAllMapped(RegExp(r"""\.`([^`]*)`"""), (m) => "['${m[1]}']");
     // Pull bracketed filter/dynamic expressions out into subx, replacing each
-    // with a [#n] placeholder. Scanned rather than regex-matched: a regex
+    // with a [#%n%] placeholder. Scanned rather than regex-matched: a regex
     // literal may contain `]`, `)` or `[` (`/^[x\]]+$/`), which truncated the
     // old alternation mid-expression, and quoted strings may contain brackets
     // too (`)]` inside a string literal, issue #5). Literal spans come from
-    // the tokenizer, bracket nesting from a depth counter.
+    // the tokenizer, bracket nesting from a depth counter. Placeholders use
+    // the %#..% sentinel namespace so they cannot collide with literal quoted
+    // property names such as '#0' (issue #6).
     n = _extractBracketExpressions(n, subx);
-    // Escape dots/tildes in bracket-quoted properties
-    n = n.replaceAllMapped(RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
-        (m) => "['${m[1]!.replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
+    // Escape dots/tildes in bracket-quoted properties. Percent signs are
+    // escaped first so the placeholder sentinels below cannot be confused
+    // with user data: a literal '#%0%' property name must survive the
+    // substitution pass untouched (issue #6). Escaping '%' first also keeps
+    // the '.'/'~' sentinels from being double-escaped.
+    n = n.replaceAllMapped(
+        RegExp(r"""\[['"]([^'"]*?)['"]\]"""),
+        (m) =>
+            "['${m[1]!.replaceAll('%', '%@pct@%').replaceAll('.', '%@%').replaceAll('~', '%%@@%%')}']");
     n = n.replaceAll('~', ';~;');
     n = n.replaceAll(RegExp(r"""['"]?\.['"]?(?![^[]*\])|\[['"]?"""), ';');
     n = n.replaceAll('%@%', '.');
@@ -653,13 +664,29 @@ class JSONPath {
     n = n.replaceAll(RegExp(r''';$|'?]|'$'''), '');
 
     final parts = n.split(';');
+    // Substitute placeholders by splicing them into the token, so a
+    // placeholder followed by a tokenization remainder keeps the remainder
+    // instead of being replaced wholesale (issue #6).
+    //
+    // The '%' escape is undone on the token's own segments only, never on the
+    // spliced-in filter text: a filter whose expression literally contains
+    // '%@pct@%' must survive verbatim. Every token is restored, including
+    // placeholder-free ones — '$['#%0%']' alone carries no placeholder, so an
+    // early return there would leak the escape sentinel.
+    final placeholder = RegExp(r'#%(\d+)%');
+    String restorePct(String segment) => segment.replaceAll('%@pct@%', '%');
     final exprList = parts.map((e) {
-      final m = RegExp(r'#(\d+)').firstMatch(e);
-      if (m != null) {
+      if (subx.isEmpty || !e.contains('#%')) return restorePct(e);
+      final spliced = StringBuffer();
+      var cursor = 0;
+      for (final m in placeholder.allMatches(e)) {
+        spliced.write(restorePct(e.substring(cursor, m.start)));
         final idx = int.parse(m[1]!);
-        return idx < subx.length ? subx[idx] : e;
+        spliced.write(idx < subx.length ? subx[idx] : m[0]!);
+        cursor = m.end;
       }
-      return e;
+      spliced.write(restorePct(e.substring(cursor)));
+      return spliced.toString();
     }).toList();
     _cacheStore(expr, exprList);
     return List<String>.from(exprList);
