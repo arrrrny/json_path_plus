@@ -241,7 +241,7 @@ void main() {
           'match': BuiltInFunction((args) => args.isNotEmpty),
         },
       );
-      final result = JSONPath.evaluate(opts);
+      final result = JSONPath.evaluate(opts) as List<Object?>;
       expect(result.length, 1);
     });
   });

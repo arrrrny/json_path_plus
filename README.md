@@ -226,16 +226,27 @@ JSONPath.clearCache();           // → drop every cached path
 
 ### `JsonPathMatch`
 
+Returned by `JSONPath.evaluate` when `resultType: 'all'`, and passed to the
+`callback` option.
+
 ```dart
 class JsonPathMatch {
-  final Object? value;      // The matched value
-  final String path;         // The path string
-  final List<String>? paths; // Path components
-  final Object? parent;      // Parent object
-  final String? property;    // Property name
-  Object? pointer;           // JSON Pointer
+  List<String> path;               // Path components, e.g. ['$', 'store', 'book', 0]
+  Object? value;                   // The matched value
+  Object? parent;                  // Object/array containing the matched value
+  String? parentProperty;          // Key or index within parent; null for root
+  bool hasArrExpr;                 // Whether a wildcard/slice/array expr was involved
+  String? pointer;                 // JSON Pointer; only populated when resultType is 'all'
+  String? pathString;              // Path string; only populated when resultType is 'all'
+
+  // Internal to the engine — not part of the public contract:
+  bool isParentSelector;
+  List<String>? parentSelectorExpr;
 }
 ```
+
+Note there is no `property` field — the member key is `parentProperty`.
+`pointer` and `pathString` are populated only when `resultType` is `'all'`.
 
 ### `SafeEval`
 

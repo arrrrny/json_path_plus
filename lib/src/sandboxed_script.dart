@@ -379,7 +379,7 @@ class Parser {
   Expr _parseTernary() {
     _enter();
     try {
-      var expr = _parseOr();
+      final expr = _parseOr();
       if (_matchOp('?')) {
         final consequent = _parseTernary();
         _expectOp(':');
@@ -1190,14 +1190,14 @@ class _MethodProxy {
       switch (_methodName) {
         case 'indexOf':
           if (args.isNotEmpty) {
-            for (int i = 0; i < target.length; i++) {
+            for (var i = 0; i < target.length; i++) {
               if (_deepEquals(target[i], args[0])) return i;
             }
           }
           return -1;
         case 'includes':
           if (args.isNotEmpty) {
-            for (int i = 0; i < target.length; i++) {
+            for (var i = 0; i < target.length; i++) {
               if (_deepEquals(target[i], args[0])) return true;
             }
           }
