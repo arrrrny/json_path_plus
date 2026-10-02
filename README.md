@@ -32,7 +32,7 @@ Add to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
-  json_path_plus: ^1.0.0
+  json_path_plus: ^2.0.0
 ```
 
 Then run:
