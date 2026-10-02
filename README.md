@@ -195,6 +195,20 @@ JSONPath.toPointer(['$', 'store', 'book', '0', 'title']);
 // → '/store/book/0/title'
 ```
 
+### Path cache
+
+`toPathArray` memoizes compiled paths internally. The cache is private and
+bounded: it retains at most `JSONPath.cacheCapacity` (512) entries and evicts
+the least recently used one when full, so workloads that build paths
+dynamically (interpolated keys, per-item selectors) cannot grow it without
+bound. Only read-only inspection is exposed:
+
+```dart
+JSONPath.cacheSize;              // → entries currently retained
+JSONPath.isCached(r'$.a.b');     // → true if that path is cached
+JSONPath.clearCache();           // → drop every cached path
+```
+
 ### `JsonPathOptions`
 
 | Field               | Type        | Default   | Description                                                               |
