@@ -262,6 +262,10 @@ class Parser {
   final List<Token> tokens;
   int pos = 0;
 
+  /// Current recursive-descent depth, tracked so adversarially nested
+  /// input fails with a [FormatException] instead of a StackOverflowError.
+  int _depth = 0;
+
   Parser(this.tokens);
 
   Expr parse() {
@@ -270,14 +274,19 @@ class Parser {
   }
 
   Expr _parseTernary() {
-    var expr = _parseOr();
-    if (_matchOp('?')) {
-      final consequent = _parseTernary();
-      _expectOp(':');
-      final alternate = _parseTernary();
-      return ConditionalExpr(expr, consequent, alternate);
+    _enter();
+    try {
+      var expr = _parseOr();
+      if (_matchOp('?')) {
+        final consequent = _parseTernary();
+        _expectOp(':');
+        final alternate = _parseTernary();
+        return ConditionalExpr(expr, consequent, alternate);
+      }
+      return expr;
+    } finally {
+      _depth--;
     }
-    return expr;
   }
 
   Expr _parseOr() {
@@ -365,33 +374,47 @@ class Parser {
   }
 
   Expr _parseUnary() {
-    if (_matchOp('!')) {
-      return UnaryExpr('!', _parseUnary());
-    }
-    if (_matchOp('-')) {
-      // Check for negative number literal — avoid wrapping
-      if (_current().type == 'num') {
-        final tok = _current();
-        _advance();
-        final val = -num.parse(tok.value);
-        return LiteralExpr(val);
+    _enter();
+    try {
+      if (_matchOp('!')) {
+        return UnaryExpr('!', _parseUnary());
       }
-      return UnaryExpr('-', _parseUnary());
+      if (_matchOp('-')) {
+        // Check for negative number literal — avoid wrapping
+        if (_current().type == 'num') {
+          final tok = _current();
+          _advance();
+          final val = -num.parse(tok.value);
+          return LiteralExpr(val);
+        }
+        return UnaryExpr('-', _parseUnary());
+      }
+      if (_matchOp('+')) {
+        return UnaryExpr('+', _parseUnary());
+      }
+      if (_matchOp('~')) {
+        return UnaryExpr('~', _parseUnary());
+      }
+      if (_peekOp('typeof')) {
+        _advance();
+        return TypeofExpr(_parseUnary());
+      }
+      if (_matchOp('void')) {
+        return UnaryExpr('void', _parseUnary());
+      }
+      return _parsePostfix();
+    } finally {
+      _depth--;
     }
-    if (_matchOp('+')) {
-      return UnaryExpr('+', _parseUnary());
+  }
+
+  /// Track recursive-descent depth; refuse expressions nested deeper than
+  /// [SafeEval.maxNestingDepth]. Past that limit the parser recursion itself
+  /// risks a StackOverflowError, which must surface as a [FormatException].
+  void _enter() {
+    if (++_depth > SafeEval.maxNestingDepth) {
+      throw const FormatException('expression too deeply nested');
     }
-    if (_matchOp('~')) {
-      return UnaryExpr('~', _parseUnary());
-    }
-    if (_peekOp('typeof')) {
-      _advance();
-      return TypeofExpr(_parseUnary());
-    }
-    if (_matchOp('void')) {
-      return UnaryExpr('void', _parseUnary());
-    }
-    return _parsePostfix();
   }
 
   Expr _parsePostfix() {
@@ -517,12 +540,29 @@ class Parser {
 // ── Evaluator ──
 
 class SafeEval {
+  /// Maximum accepted expression length (64 KiB). Longer expressions throw
+  /// [FormatException] before any parsing happens.
+  static const int maxExpressionLength = 64 * 1024;
+
+  /// Maximum accepted expression nesting depth. Deeper expressions throw
+  /// [FormatException] instead of overflowing the stack during recursive
+  /// descent parsing.
+  static const int maxNestingDepth = 256;
+
   /// Parse and evaluate a JS-style expression string with the given
   /// variable bindings.
   ///
   /// The RFC 9535 `match()` and `search()` function extensions are always
   /// available; entries in [context] shadow them.
+  ///
+  /// Throws [FormatException] if [code] exceeds [maxExpressionLength] or is
+  /// nested deeper than [maxNestingDepth] — resource limits that keep
+  /// adversarial input from crashing with a StackOverflowError.
   static Object? evaluate(String code, Map<String, Object?> context) {
+    if (code.length > maxExpressionLength) {
+      throw const FormatException(
+          'expression too long (limit is $maxExpressionLength characters)');
+    }
     final subs = <String, Object?>{
       'match': BuiltInFunction(_rfcMatch),
       'search': BuiltInFunction(_rfcSearch),
